@@ -4,39 +4,27 @@ import AppKit
 
 let size: CGFloat = 1024
 
+// Monochrome, like Tars: ink (#18181b) on Tars's page colour (#fafaf8).
+let ink = CGColor(red: 0x18 / 255, green: 0x18 / 255, blue: 0x1b / 255, alpha: 1)
+let page = CGColor(red: 0xfa / 255, green: 0xfa / 255, blue: 0xf8 / 255, alpha: 1)
+let line = CGColor(red: 0xe6 / 255, green: 0xe6 / 255, blue: 0xe9 / 255, alpha: 1)
+
 func drawIcon(_ ctx: CGContext) {
-    // macOS icon grid: 824pt body inset 100pt, continuous-ish corners.
+    // macOS icon grid: 824pt body inset 100pt.
     let body = CGRect(x: 100, y: 100, width: 824, height: 824)
     let shape = CGPath(roundedRect: body, cornerWidth: 186, cornerHeight: 186, transform: nil)
 
-    // Soft drop shadow
+    // Soft drop shadow, then the off-white tile with a hairline edge.
     ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 28,
-                  color: CGColor(gray: 0, alpha: 0.35))
+    ctx.setShadow(offset: CGSize(width: 0, height: -10), blur: 24, color: CGColor(gray: 0, alpha: 0.22))
     ctx.addPath(shape)
-    ctx.setFillColor(CGColor(red: 0.08, green: 0.08, blue: 0.11, alpha: 1))
+    ctx.setFillColor(page)
     ctx.fillPath()
     ctx.restoreGState()
-
-    // Background gradient (deep night blue → near black)
-    ctx.saveGState()
     ctx.addPath(shape)
-    ctx.clip()
-    let space = CGColorSpaceCreateDeviceRGB()
-    let bg = CGGradient(colorsSpace: space, colors: [
-        CGColor(red: 0.17, green: 0.16, blue: 0.27, alpha: 1),
-        CGColor(red: 0.07, green: 0.07, blue: 0.10, alpha: 1),
-    ] as CFArray, locations: [0, 1])!
-    ctx.drawLinearGradient(bg, start: CGPoint(x: 512, y: 924), end: CGPoint(x: 512, y: 100), options: [])
-
-    // Warm glow behind the play buttons
-    let glow = CGGradient(colorsSpace: space, colors: [
-        CGColor(red: 0.88, green: 0.64, blue: 0.23, alpha: 0.35),
-        CGColor(red: 0.88, green: 0.64, blue: 0.23, alpha: 0),
-    ] as CFArray, locations: [0, 1])!
-    ctx.drawRadialGradient(glow, startCenter: CGPoint(x: 540, y: 500), startRadius: 0,
-                           endCenter: CGPoint(x: 540, y: 500), endRadius: 420, options: [])
-    ctx.restoreGState()
+    ctx.setStrokeColor(line)
+    ctx.setLineWidth(4)
+    ctx.strokePath()
 
     // Rounded play triangle
     func play(center: CGPoint, height h: CGFloat) -> CGPath {
@@ -55,21 +43,13 @@ func drawIcon(_ ctx: CGContext) {
     }
 
     // Two play buttons, one behind the other: "watching together, in sync".
-    ctx.addPath(play(center: CGPoint(x: 430, y: 512), height: 400))
-    ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.22))
+    // Same shapes as the in-app mark; the one behind is a tint of the ink.
+    ctx.addPath(play(center: CGPoint(x: 438, y: 512), height: 380))
+    ctx.setFillColor(ink.copy(alpha: 0.28)!)
     ctx.fillPath()
-
-    ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: -8), blur: 24,
-                  color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.45))
-    ctx.addPath(play(center: CGPoint(x: 560, y: 512), height: 400))
-    let amber = CGGradient(colorsSpace: space, colors: [
-        CGColor(red: 0.98, green: 0.76, blue: 0.33, alpha: 1),
-        CGColor(red: 0.88, green: 0.56, blue: 0.16, alpha: 1),
-    ] as CFArray, locations: [0, 1])!
-    ctx.clip()
-    ctx.drawLinearGradient(amber, start: CGPoint(x: 512, y: 712), end: CGPoint(x: 512, y: 312), options: [])
-    ctx.restoreGState()
+    ctx.addPath(play(center: CGPoint(x: 560, y: 512), height: 380))
+    ctx.setFillColor(ink)
+    ctx.fillPath()
 }
 
 func png(pixels: Int) -> Data {
