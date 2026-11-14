@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Person, Snapshot } from "../api";
 import { formatDrift } from "../format";
 import type { UpdateState } from "../update";
-import { ArrowUpIcon, CheckIcon, CopyIcon, Mark } from "./Icons";
+import { ArrowUpIcon, CheckIcon, CopyIcon, Mark, RefreshIcon } from "./Icons";
 
 interface Props {
   snap: Snapshot;
@@ -10,9 +10,10 @@ interface Props {
   update: UpdateState;
   onCopyCode: () => Promise<void>;
   onUpdate: () => void;
+  onCheck: () => void;
 }
 
-export function Sidebar({ snap, version, update, onCopyCode, onUpdate }: Props) {
+export function Sidebar({ snap, version, update, onCopyCode, onUpdate, onCheck }: Props) {
   const [copied, setCopied] = useState(false);
   const inRoom = snap.phase === "room";
 
@@ -48,7 +49,7 @@ export function Sidebar({ snap, version, update, onCopyCode, onUpdate }: Props) 
             {copied ? "Copied. Send it to friends" : "Copy invite code"}
           </button>
         )}
-        <UpdateLink state={update} onUpdate={onUpdate} />
+        <UpdateLink state={update} onUpdate={onUpdate} onCheck={onCheck} />
         <div className="version mono">WatchSync {version}</div>
       </div>
     </nav>
@@ -82,28 +83,57 @@ function PersonRow({ person: p }: { person: Person }) {
   );
 }
 
-function UpdateLink({ state, onUpdate }: { state: UpdateState; onUpdate: () => void }) {
-  if (state.kind === "available")
-    return (
-      <button className="foot-link signal" onClick={onUpdate}>
-        <ArrowUpIcon />
-        Update to {state.version}
-        <span className="dot" />
-      </button>
-    );
-  if (state.kind === "installing")
-    return (
-      <div className="foot-link" aria-live="polite">
-        <span className="spinner" />
-        {state.percent === null ? "Updating…" : `Downloading ${state.percent}%`}
-      </div>
-    );
-  if (state.kind === "failed")
-    return (
-      <button className="foot-link" onClick={onUpdate} title={state.message}>
-        <ArrowUpIcon />
-        Update failed. Try again
-      </button>
-    );
-  return null;
+function UpdateLink({ state, onUpdate, onCheck }: { state: UpdateState; onUpdate: () => void; onCheck: () => void }) {
+  switch (state.kind) {
+    case "available":
+      return (
+        <button className="foot-link signal" onClick={onUpdate}>
+          <ArrowUpIcon />
+          Update to {state.version}
+          <span className="dot" />
+        </button>
+      );
+    case "installing":
+      return (
+        <div className="foot-link" aria-live="polite">
+          <span className="spinner" />
+          {state.percent === null ? "Updating…" : `Downloading ${state.percent}%`}
+        </div>
+      );
+    case "failed":
+      return (
+        <button className="foot-link" onClick={onUpdate} title={state.message}>
+          <ArrowUpIcon />
+          Update failed. Try again
+        </button>
+      );
+    case "checking":
+      return (
+        <div className="foot-link" aria-live="polite">
+          <span className="spinner" />
+          Checking for updates…
+        </div>
+      );
+    case "latest":
+      return (
+        <div className="foot-link" aria-live="polite">
+          <CheckIcon />
+          You're up to date
+        </div>
+      );
+    case "check_failed":
+      return (
+        <button className="foot-link" onClick={onCheck} title="Check your internet connection">
+          <RefreshIcon />
+          Couldn't check. Try again
+        </button>
+      );
+    default:
+      return (
+        <button className="foot-link" onClick={onCheck}>
+          <RefreshIcon />
+          Check for updates
+        </button>
+      );
+  }
 }

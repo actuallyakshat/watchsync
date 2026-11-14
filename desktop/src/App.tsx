@@ -83,6 +83,7 @@ export function App() {
           if (snap.code) await writeText(snap.code);
         }}
         onUpdate={runUpdate}
+        onCheck={() => void updater.checkNow()}
       />
       <main className="main">
         <div className="drag topbar" data-tauri-drag-region>

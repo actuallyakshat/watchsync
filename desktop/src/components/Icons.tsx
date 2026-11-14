@@ -68,6 +68,12 @@ export const ArrowUpIcon = () => (
   </svg>
 );
 
+export const RefreshIcon = () => (
+  <svg {...base}>
+    <path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3" />
+  </svg>
+);
+
 export const LeaveIcon = () => (
   <svg {...base}>
     <path d="M9.5 3H4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h5.5M7 8h6.5M11 5.5 13.5 8 11 10.5" />

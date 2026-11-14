@@ -26,7 +26,13 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "0.2.0" }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => "/Movies/film.mkv"), ask: vi.fn(async () => true) }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn(async () => {}) }));
-vi.mock("@tauri-apps/plugin-updater", () => ({ check: vi.fn(async () => pendingUpdate) }));
+let checkFails = false;
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: vi.fn(async () => {
+    if (checkFails) throw new Error("offline");
+    return pendingUpdate;
+  }),
+}));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn(async () => {}) }));
 
 const { App } = await import("./App");
@@ -56,6 +62,7 @@ beforeEach(() => {
   sent.length = 0;
   setup = { installed: true, has_brew: true };
   pendingUpdate = null;
+  checkFails = false;
 });
 
 test("home: host a room, or join with a pasted code", async () => {
@@ -122,4 +129,30 @@ test("offers an available update", async () => {
   const button = await screen.findByRole("button", { name: /Update to 0\.3\.0/ });
   await userEvent.click(button);
   await waitFor(() => expect(install).toHaveBeenCalled());
+});
+
+test("check for updates: up to date, then a new release appears", async () => {
+  render(<App />);
+  const button = await screen.findByRole("button", { name: "Check for updates" });
+  await userEvent.click(button);
+  expect(await screen.findByText("You're up to date")).toBeInTheDocument();
+
+  pendingUpdate = { version: "0.3.0", downloadAndInstall: vi.fn(async () => {}) };
+  await waitFor(() => expect(screen.getByRole("button", { name: "Check for updates" })).toBeInTheDocument(), {
+    timeout: 6000,
+  });
+  await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+  expect(await screen.findByRole("button", { name: /Update to 0\.3\.0/ })).toBeInTheDocument();
+}, 10000);
+
+test("check for updates: says so when offline, and can retry", async () => {
+  checkFails = true;
+  render(<App />);
+  // The automatic check at launch fails quietly: the button is still there.
+  await userEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
+  const retry = await screen.findByRole("button", { name: "Couldn't check. Try again" });
+
+  checkFails = false;
+  await userEvent.click(retry);
+  expect(await screen.findByText("You're up to date")).toBeInTheDocument();
 });
