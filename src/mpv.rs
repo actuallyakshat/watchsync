@@ -34,6 +34,11 @@ pub fn kill_player() {
     }
 }
 
+/// Escape text for mpv's property expansion (`$` starts `${...}`).
+pub fn osd_escape(text: &str) -> String {
+    text.replace('$', "$$")
+}
+
 /// mpv options that change which part of the picture is visible. Reset at
 /// launch and whenever the room's crop is applied, so they can't diverge.
 const VIEW_RESET: [(&str, &str); 5] = [
@@ -304,7 +309,18 @@ impl Mpv {
         Ok(())
     }
 
+    /// Show text on the movie. Escaped, so names and chat can't expand mpv
+    /// properties (`${path}` would otherwise reveal the file's location).
     pub async fn show_text(&self, text: &str) {
-        let _ = self.command(json!(["show-text", text, 2500])).await;
+        let _ = self.command(json!(["show-text", osd_escape(text), 3000])).await;
+    }
+
+    /// What mpv makes of `text` after property expansion (for tests).
+    pub async fn expand_text(&self, text: &str) -> Result<String> {
+        self.command(json!(["expand-text", text]))
+            .await?
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("no text"))
     }
 }

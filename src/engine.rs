@@ -4,7 +4,7 @@
 
 use crate::fingerprint::fingerprint;
 use crate::mpv::{Mpv, MpvEvent};
-use crate::net::{self, HostLink, Intent, Msg, NetEvent, PeerInfo};
+use crate::net::{self, HostLink, Intent, Msg, NetEvent, PeerInfo, Reaction};
 use crate::sync::{
     ClockSync, Correction, Crop, PLAY_LEAD_MS, PlaybackState, correction, crop_geometry,
     format_time, now_ms,
@@ -29,6 +29,8 @@ pub enum UiCmd {
     SeekTo { position: f64 },
     SetCrop { crop: Crop },
     SetName { name: String },
+    Chat { text: String },
+    React { reaction: Reaction },
     Leave,
     /// Test only: drop the connection to the host as if the network blinked.
     #[doc(hidden)]
@@ -98,6 +100,21 @@ pub struct PeerRow {
     pub outdated: bool,
 }
 
+/// One line in the room's chat: a message or a reaction.
+#[derive(Clone, Debug, Serialize)]
+pub struct ChatLine {
+    pub from: String,
+    pub text: Option<String>,
+    pub reaction: Option<Reaction>,
+    pub mine: bool,
+    pub at_ms: f64,
+}
+
+/// Longest chat message, in characters.
+pub const MAX_CHAT: usize = 300;
+/// Chat lines kept.
+const CHAT_KEEP: usize = 100;
+
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct Snapshot {
     pub name: String,
@@ -128,6 +145,8 @@ pub struct Snapshot {
     pub reconnecting: bool,
     /// How many times this session has reconnected after losing the host.
     pub reconnects: u32,
+    /// Recent chat and reactions, oldest first.
+    pub chat: Vec<ChatLine>,
 }
 
 enum Role {
@@ -193,6 +212,7 @@ struct Engine {
     next_conn: u64,
     last_host_msg: Instant,
     reconnects: u32,
+    chat: Vec<ChatLine>,
     error: Option<String>,
 
     state: PlaybackState,
@@ -253,6 +273,7 @@ pub async fn run_with(
         next_conn: 1,
         last_host_msg: now,
         reconnects: 0,
+        chat: Vec::new(),
         error: None,
         state: PlaybackState::default(),
         clock: ClockSync::default(),
@@ -393,6 +414,16 @@ impl Engine {
                 }
             }
             UiCmd::SetName { name } => self.rename(name).await,
+            UiCmd::Chat { text } => {
+                if let Some(text) = clean_chat(&text) {
+                    self.add_chat(self.name.clone(), Some(text.clone()), None, true);
+                    self.relay(Msg::Chat { from: self.name.clone(), text }, None);
+                }
+            }
+            UiCmd::React { reaction } => {
+                self.add_chat(self.name.clone(), None, Some(reaction), true);
+                self.relay(Msg::React { from: self.name.clone(), reaction }, None);
+            }
             UiCmd::Leave => self.leave().await,
             UiCmd::TestDropHostLink => {
                 if let Role::Guest { link: Some(l), .. } = &self.role {
@@ -431,6 +462,49 @@ impl Engine {
         } else if let Some(tx) = self.host_tx() {
             let _ = tx.send(Msg::Rename { name });
         }
+    }
+
+    fn add_chat(&mut self, from: String, text: Option<String>, reaction: Option<Reaction>, mine: bool) {
+        self.chat.push(ChatLine {
+            from,
+            text,
+            reaction,
+            mine,
+            at_ms: now_ms(),
+        });
+        if self.chat.len() > CHAT_KEEP {
+            self.chat.remove(0);
+        }
+    }
+
+    /// Send chat/reactions on: a guest to the host, the host to everyone
+    /// except `skip` (the peer it came from).
+    fn relay(&self, msg: Msg, skip: Option<u64>) {
+        match &self.role {
+            Role::Host { peers } => {
+                for (id, p) in peers {
+                    if Some(*id) != skip {
+                        let _ = p.tx.send(msg.clone());
+                    }
+                }
+            }
+            _ => {
+                if let Some(tx) = self.host_tx() {
+                    let _ = tx.send(msg);
+                }
+            }
+        }
+    }
+
+    /// Someone else's chat line or reaction arrived: log it and show it on the movie.
+    async fn heard(&mut self, from: String, text: Option<String>, reaction: Option<Reaction>) {
+        let osd = match (&text, reaction) {
+            (Some(t), _) => format!("{from}: {t}"),
+            (None, Some(r)) => format!("{from} {}", r.phrase()),
+            _ => return,
+        };
+        self.add_chat(from, text, reaction, false);
+        self.osd(&osd).await;
     }
 
     fn fail_to_home(&mut self, error: String) {
@@ -483,6 +557,7 @@ impl Engine {
         self.clock = ClockSync::default();
         self.crop = Crop::Original;
         self.crop_by = None;
+        self.chat.clear();
         self.mpv = None;
         self.mpv_gen += 1;
         self.applied_crop = None;
@@ -853,6 +928,12 @@ impl Engine {
                         self.apply_crop().await;
                     }
                     Msg::HostLeaving { successor } => self.host_lost(Some(successor)),
+                    Msg::Chat { from, text } => {
+                        if let Some(text) = clean_chat(&text) {
+                            self.heard(from, Some(text), None).await;
+                        }
+                    }
+                    Msg::React { from, reaction } => self.heard(from, None, Some(reaction)).await,
                     _ => {}
                 }
             }
@@ -1090,6 +1171,19 @@ impl Engine {
                 let name = peer.name.clone();
                 self.apply_intent(intent, name).await;
             }
+            // Chat: the host vouches for who sent it.
+            Msg::Chat { text, .. } => {
+                let from = peer.name.clone();
+                if let Some(text) = clean_chat(&text) {
+                    self.relay(Msg::Chat { from: from.clone(), text: text.clone() }, Some(id));
+                    self.heard(from, Some(text), None).await;
+                }
+            }
+            Msg::React { reaction, .. } => {
+                let from = peer.name.clone();
+                self.relay(Msg::React { from: from.clone(), reaction }, Some(id));
+                self.heard(from, None, Some(reaction)).await;
+            }
             _ => {}
         }
     }
@@ -1189,8 +1283,32 @@ impl Engine {
             crop_applied: self.applied_crop == Some((self.mpv_gen, self.crop)),
             reconnecting: matches!(self.role, Role::Guest { link: None, .. }),
             reconnects: self.reconnects,
+            chat: self.chat.clone(),
         };
         // Bounded(1) channel: replace any snapshot the UI hasn't drawn yet.
         let _ = self.ui.force_send(snapshot);
+    }
+}
+
+/// One line, trimmed, at most MAX_CHAT characters; None if empty.
+fn clean_chat(text: &str) -> Option<String> {
+    let one_line: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(MAX_CHAT)
+        .collect();
+    let t = one_line.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_is_one_trimmed_line() {
+        assert_eq!(clean_chat("  hi\nthere\t "), Some("hi there".into()));
+        assert_eq!(clean_chat("   "), None);
+        assert_eq!(clean_chat(&"x".repeat(500)).unwrap().len(), MAX_CHAT);
     }
 }

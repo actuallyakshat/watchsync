@@ -18,6 +18,33 @@ pub enum Intent {
     SetCrop { crop: Crop },
 }
 
+/// Quick reactions. Shown as words on the movie (its text renderer has no
+/// colour emoji) and as emoji in the app.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Reaction {
+    Laugh,
+    Wow,
+    Love,
+    Fire,
+    Clap,
+    Sad,
+}
+
+impl Reaction {
+    /// "Riya {phrase}", for the movie window.
+    pub fn phrase(self) -> &'static str {
+        match self {
+            Reaction::Laugh => "is laughing",
+            Reaction::Wow => "is shocked",
+            Reaction::Love => "loves this",
+            Reaction::Fire => "says this is fire",
+            Reaction::Clap => "is clapping",
+            Reaction::Sad => "is tearing up",
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PeerInfo {
     pub name: String,
@@ -74,6 +101,11 @@ pub enum Msg {
     Rename { name: String },
     /// host → all: "I'm leaving; this peer (endpoint id) takes over".
     HostLeaving { successor: String },
+    /// A chat line. Guests send it to the host with `from` empty; the host
+    /// fills in the sender's name and passes it on to everyone else.
+    Chat { from: String, text: String },
+    /// A quick reaction, relayed the same way.
+    React { from: String, reaction: Reaction },
 }
 
 #[derive(Debug)]

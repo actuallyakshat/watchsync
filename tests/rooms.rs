@@ -8,6 +8,7 @@ use common::*;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use watchsync::engine::{Phase, Timing, UiCmd};
+use watchsync::net::Reaction;
 
 fn fast() -> Timing {
     Timing {
@@ -138,4 +139,40 @@ fn when_the_host_vanishes_the_next_person_takes_over() {
     peers[1].send(UiCmd::SeekBy { seconds: 30.0 });
     let target = time_pos(&watchers[0]) + 30.0;
     assert!(eventually(Duration::from_secs(5), || (time_pos(&watchers[1]) - target).abs() < 2.0));
+}
+
+#[test]
+fn chat_and_reactions_reach_everyone_with_the_right_names() {
+    headless();
+    let mut host = Peer::start_with("Host", fast());
+    host.send(UiCmd::Host);
+    let code = host.wait("room", 30, |s| s.code.is_some()).code.unwrap();
+    let mut riya = Peer::start_with("Riya", fast());
+    let mut aman = Peer::start_with("Aman", fast());
+    for p in [&mut riya, &mut aman] {
+        p.send(UiCmd::Join { code: code.clone() });
+        p.wait("joined", 30, |s| s.phase == Phase::Room);
+    }
+    host.wait("all here", 10, |s| s.peers.len() == 3);
+
+    riya.send(UiCmd::Chat { text: "  popcorn ready?\n${path} ".into() });
+    for p in [&mut host, &mut aman] {
+        let s = p.wait("Riya's message", 5, |s| !s.chat.is_empty());
+        let line = &s.chat[0];
+        assert_eq!(line.from, "Riya");
+        assert_eq!(line.text.as_deref(), Some("popcorn ready? ${path}"));
+        assert!(!line.mine);
+    }
+    let s = riya.wait("own line", 5, |s| !s.chat.is_empty());
+    assert!(s.chat[0].mine && s.chat.len() == 1, "the sender sees it once");
+
+    aman.send(UiCmd::React { reaction: Reaction::Laugh });
+    host.send(UiCmd::Chat { text: "starting now".into() });
+    for p in [&mut riya, &mut aman, &mut host] {
+        p.wait("everything", 5, |s| s.chat.len() == 3);
+    }
+    let s = riya.now();
+    assert!(s.chat.iter().any(|l| l.from == "Aman" && l.reaction == Some(Reaction::Laugh)));
+    assert!(s.chat.iter().any(|l| l.from == "Host" && l.text.as_deref() == Some("starting now")));
+    assert_eq!(aman.now().chat.iter().filter(|l| l.reaction.is_some()).count(), 1);
 }

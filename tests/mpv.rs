@@ -154,3 +154,16 @@ async fn crops_and_uncrops_the_picture() {
         "crop should be cleared, got {crop}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn on_screen_text_cannot_expand_properties() {
+    let (mpv, _rx) = launch(0.0).await;
+    loaded_pos(&mpv).await;
+    // Unescaped, mpv would put the file's path on screen.
+    let raw = mpv.expand_text("${path}").await.unwrap();
+    assert!(raw.contains("clip.mkv"), "sanity: mpv expands {raw}");
+    for text in ["Riya: ${path}", "costs $5", "$$", "${filename} lol $>"] {
+        let shown = mpv.expand_text(&watchsync::mpv::osd_escape(text)).await.unwrap();
+        assert_eq!(shown, text);
+    }
+}
