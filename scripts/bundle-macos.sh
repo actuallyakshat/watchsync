@@ -41,6 +41,6 @@ PLIST
 # Ad-hoc signature (required to run on Apple Silicon). Not notarized.
 codesign --force --deep --sign - "$APP"
 
-# Fixed file name so .../releases/latest/download/WatchSync-macos.zip always works.
-(cd dist && ditto -c -k --keepParent WatchSync.app WatchSync-macos.zip)
-echo "Built dist/WatchSync-macos.zip (v${VERSION})"
+ZIP="WatchSync-${VERSION}-macos-universal.zip"
+(cd dist && ditto -c -k --keepParent WatchSync.app "$ZIP")
+echo "Built dist/$ZIP"

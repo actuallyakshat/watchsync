@@ -6,30 +6,31 @@ any Mac and it happens for everyone. No accounts.
 
 ## Install
 
-Open **Terminal**, paste this line and press Return:
+With [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask actuallyakshat/tap/watchsync
+```
+
+No Homebrew? Paste this into Terminal (installs Homebrew, then WatchSync):
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/actuallyakshat/watchsync/main/scripts/install.sh)"
 ```
 
-It installs WatchSync into Applications, installs the video player (mpv,
-plus Homebrew if needed; it may ask for your Mac password), and opens the app.
-Run the same line again to update.
-
-Prefer downloading by hand? Get `WatchSync-macos.zip` from the
-[latest release](https://github.com/actuallyakshat/watchsync/releases/latest).
-The app isn't notarized by Apple (that needs a paid developer account), so a
-browser download shows a "can't verify" warning the first time: open it via
-System Settings → Privacy & Security → **Open Anyway**. The Terminal installer
-avoids this because macOS only checks files downloaded through browsers and
-chat apps.
+Both also install mpv, the video player WatchSync uses, and open without a
+security warning. Update with `brew upgrade --cask watchsync`.
 
 ## Build a release
 
+Bump `version` in `Cargo.toml`, commit and push, then:
+
 ```bash
-./scripts/bundle-macos.sh   # → dist/WatchSync-macos.zip (universal)
-swift scripts/make-icon.swift  # regenerate assets/WatchSync.icns
+./scripts/release.sh           # build, GitHub release, update the Homebrew cask
 ```
+
+`./scripts/bundle-macos.sh` builds `dist/WatchSync-<version>-macos-universal.zip`
+on its own; `swift scripts/make-icon.swift` regenerates the icon.
 
 ## Run from source
 
