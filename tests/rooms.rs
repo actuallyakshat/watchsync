@@ -8,6 +8,7 @@ use common::*;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use watchsync::engine::{Phase, Timing, UiCmd};
+use watchsync::mpv::{Comfort, TrackKind};
 use watchsync::net::Reaction;
 
 fn fast() -> Timing {
@@ -175,4 +176,55 @@ fn chat_and_reactions_reach_everyone_with_the_right_names() {
     assert!(s.chat.iter().any(|l| l.from == "Aman" && l.reaction == Some(Reaction::Laugh)));
     assert!(s.chat.iter().any(|l| l.from == "Host" && l.text.as_deref() == Some("starting now")));
     assert_eq!(aman.now().chat.iter().filter(|l| l.reaction.is_some()).count(), 1);
+}
+
+#[test]
+fn comfort_settings_and_tracks_are_personal() {
+    headless();
+    let clip = rich_clip();
+    let mut host = Peer::start_with("Host", fast());
+    host.send(UiCmd::Host);
+    let code = host.wait("room", 30, |s| s.code.is_some()).code.unwrap();
+    let mut riya = Peer::start_with("Riya", fast());
+    riya.send(UiCmd::Join { code });
+    riya.wait("joined", 30, |s| s.phase == Phase::Room);
+    host.send(UiCmd::OpenFile { path: clip.clone() });
+    riya.send(UiCmd::OpenFile { path: clip });
+    let (hs, rs) = (host.socket(), riya.socket());
+
+    // Riya sees her file's tracks...
+    let s = riya.wait("tracks listed", 10, |s| s.tracks.len() == 4);
+    let french = s
+        .tracks
+        .iter()
+        .find(|t| t.kind == TrackKind::Subtitle && t.lang.as_deref() == Some("fre"))
+        .unwrap()
+        .id;
+    // ...and picks French subtitles and both comfort options.
+    riya.send(UiCmd::SetTrack { kind: TrackKind::Subtitle, id: Some(french) });
+    riya.send(UiCmd::SetComfort {
+        comfort: Comfort { level_volume: true, boost_dialogue: true },
+    });
+    riya.wait("applied", 5, |s| {
+        s.comfort.level_volume
+            && s.tracks.iter().any(|t| t.kind == TrackKind::Subtitle && t.id == french && t.selected)
+    });
+    let filters = |sock: &Path| {
+        ipc(sock, serde_json::json!(["get_property", "af"]))
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0)
+    };
+    assert_eq!(filters(&rs), 2);
+    // The host's player is untouched.
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(filters(&hs), 0);
+    let host_sid = ipc(&hs, serde_json::json!(["get_property", "sid"]));
+    assert_ne!(host_sid.as_i64(), Some(french), "host's subtitles unchanged");
+
+    // Comfort survives changing the movie.
+    riya.send(UiCmd::OpenFile { path: rich_clip() });
+    std::thread::sleep(Duration::from_secs(2));
+    let rs = riya.socket();
+    assert!(eventually(Duration::from_secs(5), || filters(&rs) == 2));
 }

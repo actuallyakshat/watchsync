@@ -3,7 +3,7 @@
 //! and renders the `Snapshot`s it publishes.
 
 use crate::fingerprint::fingerprint;
-use crate::mpv::{Mpv, MpvEvent};
+use crate::mpv::{Comfort, Mpv, MpvEvent, Track, TrackKind};
 use crate::net::{self, HostLink, Intent, Msg, NetEvent, PeerInfo, Reaction};
 use crate::sync::{
     ClockSync, Correction, Crop, PLAY_LEAD_MS, PlaybackState, correction, crop_geometry,
@@ -30,6 +30,10 @@ pub enum UiCmd {
     SetCrop { crop: Crop },
     SetName { name: String },
     Chat { text: String },
+    /// Pick this person's audio or subtitle track (`id: None` = off).
+    SetTrack { kind: TrackKind, id: Option<i64> },
+    /// This person's volume levelling / dialogue boost.
+    SetComfort { comfort: Comfort },
     React { reaction: Reaction },
     Leave,
     /// Test only: drop the connection to the host as if the network blinked.
@@ -147,6 +151,9 @@ pub struct Snapshot {
     pub reconnects: u32,
     /// Recent chat and reactions, oldest first.
     pub chat: Vec<ChatLine>,
+    /// Audio and subtitle tracks in this person's file.
+    pub tracks: Vec<Track>,
+    pub comfort: Comfort,
 }
 
 enum Role {
@@ -213,6 +220,10 @@ struct Engine {
     last_host_msg: Instant,
     reconnects: u32,
     chat: Vec<ChatLine>,
+    tracks: Vec<Track>,
+    comfort: Comfort,
+    /// (player generation, comfort) last applied to mpv.
+    applied_comfort: Option<(u64, Comfort)>,
     error: Option<String>,
 
     state: PlaybackState,
@@ -274,6 +285,9 @@ pub async fn run_with(
         last_host_msg: now,
         reconnects: 0,
         chat: Vec::new(),
+        tracks: Vec::new(),
+        comfort: Comfort::default(),
+        applied_comfort: None,
         error: None,
         state: PlaybackState::default(),
         clock: ClockSync::default(),
@@ -419,6 +433,17 @@ impl Engine {
                     self.add_chat(self.name.clone(), Some(text.clone()), None, true);
                     self.relay(Msg::Chat { from: self.name.clone(), text }, None);
                 }
+            }
+            UiCmd::SetTrack { kind, id } => {
+                if let Some(mpv) = self.mpv.clone()
+                    && mpv.set_track(kind, id).await.is_ok()
+                {
+                    self.tracks = mpv.tracks().await.unwrap_or_default();
+                }
+            }
+            UiCmd::SetComfort { comfort } => {
+                self.comfort = comfort;
+                self.apply_comfort().await;
             }
             UiCmd::React { reaction } => {
                 self.add_chat(self.name.clone(), None, Some(reaction), true);
@@ -582,6 +607,15 @@ impl Engine {
         }
     }
 
+    /// Apply this person's audio comfort settings to the player.
+    async fn apply_comfort(&mut self) {
+        let Some(mpv) = self.mpv.clone() else { return };
+        let wanted = (self.mpv_gen, self.comfort);
+        if self.applied_comfort != Some(wanted) && mpv.set_comfort(self.comfort).await.is_ok() {
+            self.applied_comfort = Some(wanted);
+        }
+    }
+
     async fn current_position(&self) -> f64 {
         if let Some(mpv) = &self.mpv
             && let Ok(pos) = mpv.time_pos().await
@@ -625,8 +659,10 @@ impl Engine {
                 self.speed = 1.0;
                 self.drift_ms = None;
                 self.applied_crop = None;
+                self.applied_comfort = None;
                 self.resync().await;
                 self.apply_crop().await;
+                self.apply_comfort().await;
             }
             Err(e) => self.error = Some(e.to_string()),
         }
@@ -817,6 +853,13 @@ impl Engine {
             self.duration = mpv.duration().await.unwrap_or(0.0);
         }
         self.apply_crop().await;
+        self.apply_comfort().await;
+        // The person may switch tracks in the movie window too (j, #).
+        if let Some(mpv) = self.mpv.clone() {
+            self.tracks = mpv.tracks().await.unwrap_or_default();
+        } else {
+            self.tracks.clear();
+        }
         if self.is_host() {
             self.refresh_peers();
             self.prune_silent_peers().await;
@@ -1284,6 +1327,8 @@ impl Engine {
             reconnecting: matches!(self.role, Role::Guest { link: None, .. }),
             reconnects: self.reconnects,
             chat: self.chat.clone(),
+            tracks: self.tracks.clone(),
+            comfort: self.comfort,
         };
         // Bounded(1) channel: replace any snapshot the UI hasn't drawn yet.
         let _ = self.ui.force_send(snapshot);

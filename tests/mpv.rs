@@ -5,7 +5,8 @@ mod common;
 use common::*;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use watchsync::mpv::{Mpv, MpvEvent};
+use serde_json::json;
+use watchsync::mpv::{Comfort, Mpv, MpvEvent, TrackKind};
 
 async fn launch(start: f64) -> (Mpv, mpsc::UnboundedReceiver<MpvEvent>) {
     headless();
@@ -166,4 +167,63 @@ async fn on_screen_text_cannot_expand_properties() {
         let shown = mpv.expand_text(&watchsync::mpv::osd_escape(text)).await.unwrap();
         assert_eq!(shown, text);
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lists_and_switches_audio_and_subtitle_tracks() {
+    headless();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mpv = Mpv::launch(&rich_clip(), 5.0, tx).await.unwrap();
+    loaded_pos(&mpv).await;
+    let tracks = mpv.tracks().await.unwrap();
+    let audio: Vec<_> = tracks.iter().filter(|t| t.kind == TrackKind::Audio).collect();
+    let subs: Vec<_> = tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).collect();
+    assert_eq!(audio.len(), 2, "{tracks:?}");
+    assert_eq!(subs.len(), 2, "{tracks:?}");
+    assert_eq!(audio[0].lang.as_deref(), Some("eng"));
+    assert_eq!(audio[0].title.as_deref(), Some("Surround"));
+    assert_eq!(audio[0].channels, Some(6));
+    assert_eq!(audio[1].lang.as_deref(), Some("hin"));
+    assert_eq!(audio[1].channels, Some(2));
+    assert_eq!(subs[1].lang.as_deref(), Some("fre"));
+
+    mpv.set_track(TrackKind::Audio, Some(audio[1].id)).await.unwrap();
+    mpv.set_track(TrackKind::Subtitle, Some(subs[1].id)).await.unwrap();
+    let now = mpv.tracks().await.unwrap();
+    assert!(now.iter().any(|t| t.kind == TrackKind::Audio && t.lang.as_deref() == Some("hin") && t.selected));
+    assert!(now.iter().any(|t| t.kind == TrackKind::Subtitle && t.lang.as_deref() == Some("fre") && t.selected));
+
+    mpv.set_track(TrackKind::Subtitle, None).await.unwrap();
+    let now = mpv.tracks().await.unwrap();
+    assert!(!now.iter().any(|t| t.kind == TrackKind::Subtitle && t.selected), "subtitles off");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn comfort_filters_keep_sound_in_sync_even_after_seeks() {
+    headless();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mpv = Mpv::launch(&rich_clip(), 10.0, tx).await.unwrap();
+    loaded_pos(&mpv).await;
+    let both = Comfort { level_volume: true, boost_dialogue: true };
+    mpv.set_comfort(both).await.unwrap();
+    let af = ipc(mpv.socket(), json!(["get_property", "af"]));
+    assert_eq!(af.as_array().map(|a| a.len()), Some(2), "both filters active: {af}");
+
+    mpv.set_pause(false).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let t = mpv.time_pos().await.unwrap();
+    assert!((t - 11.5).abs() < 0.4, "plays in real time with filters: {t}");
+
+    // After a seek the sound comes back right away and stays in sync.
+    mpv.seek(60.0).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let video = mpv.time_pos().await.unwrap();
+    let audio = ipc(mpv.socket(), json!(["get_property", "audio-pts"])).as_f64().unwrap();
+    let avsync = ipc(mpv.socket(), json!(["get_property", "avsync"])).as_f64().unwrap();
+    assert!((audio - video).abs() < 0.1, "audio {audio} vs video {video}");
+    assert!(avsync.abs() < 0.05, "avsync {avsync}");
+
+    mpv.set_comfort(Comfort::default()).await.unwrap();
+    let af = ipc(mpv.socket(), json!(["get_property", "af"]));
+    assert_eq!(af.as_array().map(|a| a.len()), Some(0), "filters removed: {af}");
 }

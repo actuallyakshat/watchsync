@@ -1,6 +1,7 @@
 //! Launches mpv and controls it over its JSON IPC socket.
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,6 +32,68 @@ pub fn kill_player() {
     let pid = PLAYER_PID.swap(0, Ordering::SeqCst);
     if pid != 0 {
         let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackKind {
+    Audio,
+    Subtitle,
+}
+
+/// An audio or subtitle track, as the track picker shows it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Track {
+    pub id: i64,
+    pub kind: TrackKind,
+    pub title: Option<String>,
+    pub lang: Option<String>,
+    pub selected: bool,
+    /// Audio channels (2 = stereo, 6 = 5.1).
+    pub channels: Option<u32>,
+    pub codec: Option<String>,
+}
+
+impl Track {
+    fn from_mpv(v: &Value) -> Option<Self> {
+        let kind = match v["type"].as_str()? {
+            "audio" => TrackKind::Audio,
+            "sub" => TrackKind::Subtitle,
+            _ => return None,
+        };
+        let s = |k: &str| v[k].as_str().map(str::to_string);
+        Some(Track {
+            id: v["id"].as_i64()?,
+            kind,
+            title: s("title"),
+            lang: s("lang"),
+            selected: v["selected"].as_bool().unwrap_or(false),
+            channels: v["demux-channel-count"].as_u64().map(|c| c as u32),
+            codec: s("codec"),
+        })
+    }
+}
+
+/// Personal audio comfort settings (not shared with the room).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Comfort {
+    /// Even out loud and quiet parts (no lookahead, so seeks stay instant).
+    pub level_volume: bool,
+    /// Lift voices out of music and effects.
+    pub boost_dialogue: bool,
+}
+
+impl Comfort {
+    pub fn audio_filters(self) -> String {
+        let mut f = Vec::new();
+        if self.boost_dialogue {
+            f.push("lavfi=[dialoguenhance=original=1:enhance=2:voice=4]");
+        }
+        if self.level_volume {
+            f.push("lavfi=[acompressor=threshold=-24dB:ratio=4:attack=5:release=250:makeup=6]");
+        }
+        f.join(",")
     }
 }
 
@@ -306,6 +369,33 @@ impl Mpv {
             self.command(json!(["set_property", k, v])).await?;
         }
         self.command(json!(["set_property", "video-crop", geometry])).await?;
+        Ok(())
+    }
+
+    /// Audio and subtitle tracks in the file.
+    pub async fn tracks(&self) -> Result<Vec<Track>> {
+        let list = self.command(json!(["get_property", "track-list"])).await?;
+        Ok(list
+            .as_array()
+            .map(|a| a.iter().filter_map(Track::from_mpv).collect())
+            .unwrap_or_default())
+    }
+
+    /// Pick an audio or subtitle track (`None` = off).
+    pub async fn set_track(&self, kind: TrackKind, id: Option<i64>) -> Result<()> {
+        let prop = match kind {
+            TrackKind::Audio => "aid",
+            TrackKind::Subtitle => "sid",
+        };
+        let value = id.map_or(json!("no"), |i| json!(i));
+        self.command(json!(["set_property", prop, value])).await?;
+        Ok(())
+    }
+
+    /// Volume levelling / dialogue boost, as audio filters.
+    pub async fn set_comfort(&self, comfort: Comfort) -> Result<()> {
+        self.command(json!(["set_property", "af", comfort.audio_filters()]))
+            .await?;
         Ok(())
     }
 

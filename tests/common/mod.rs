@@ -171,3 +171,43 @@ impl Drop for Peer {
     }
 }
 
+
+/// A 2-minute clip like a real movie file: 5.1 English audio, a stereo Hindi
+/// track, English and French subtitles.
+pub fn rich_clip() -> PathBuf {
+    static CLIP: OnceLock<PathBuf> = OnceLock::new();
+    CLIP.get_or_init(|| {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        let path = dir.join("rich.mkv");
+        if !path.exists() {
+            let srt = |lang: &str, line: &str| {
+                let p = dir.join(format!("subs-{lang}.srt"));
+                std::fs::write(&p, format!("1\n00:00:01,000 --> 00:01:50,000\n{line}\n")).unwrap();
+                p
+            };
+            let (en, fr) = (srt("en", "Hello there"), srt("fr", "Bonjour"));
+            let tmp = path.with_extension("tmp.mkv");
+            let status = Command::new("ffmpeg")
+                .args(["-hide_banner", "-loglevel", "error", "-y"])
+                .args(["-f", "lavfi", "-i", "testsrc=duration=120:size=320x180:rate=24"])
+                .args(["-f", "lavfi", "-i", "sine=frequency=300:duration=120"])
+                .args(["-f", "lavfi", "-i", "sine=frequency=500:duration=120"])
+                .arg("-i").arg(&en)
+                .arg("-i").arg(&fr)
+                .args(["-map", "0:v", "-map", "1:a", "-map", "2:a", "-map", "3", "-map", "4"])
+                .args(["-c:v", "libx264", "-preset", "ultrafast", "-g", "48"])
+                .args(["-c:a:0", "aac", "-ac:a:0", "6", "-c:a:1", "aac", "-ac:a:1", "2"])
+                .args(["-c:s", "srt"])
+                .args(["-metadata:s:a:0", "language=eng", "-metadata:s:a:0", "title=Surround"])
+                .args(["-metadata:s:a:1", "language=hin"])
+                .args(["-metadata:s:s:0", "language=eng", "-metadata:s:s:1", "language=fre"])
+                .arg(&tmp)
+                .status()
+                .expect("ffmpeg is needed for tests: brew install ffmpeg");
+            assert!(status.success(), "ffmpeg failed");
+            std::fs::rename(&tmp, &path).unwrap();
+        }
+        path
+    })
+    .clone()
+}
