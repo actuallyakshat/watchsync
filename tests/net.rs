@@ -47,7 +47,10 @@ async fn host_and_guest_exchange_messages() {
         other => panic!("expected PeerJoined first, got {other:?}"),
     };
     match next(&mut host_rx).await {
-        NetEvent::FromPeer { msg: Msg::Hello { name }, .. } => assert_eq!(name, "Riya"),
+        NetEvent::FromPeer { msg: Msg::Hello { name, version }, .. } => {
+            assert_eq!(name, "Riya");
+            assert_eq!(version, net::APP_VERSION);
+        }
         other => panic!("expected Hello, got {other:?}"),
     }
 
@@ -70,4 +73,14 @@ async fn host_and_guest_exchange_messages() {
         other => panic!("expected PeerLeft, got {other:?}"),
     }
     host_ep.close().await;
+}
+
+#[test]
+fn old_and_new_apps_understand_each_other() {
+    // A 0.1.x guest's Hello has no version: still parses, version is "".
+    let old: Msg = serde_json::from_str(r#"{"Hello":{"name":"Riya"}}"#).unwrap();
+    assert!(matches!(old, Msg::Hello { ref version, .. } if version.is_empty()));
+    // A 0.1.x host reads our Hello fine too (extra fields are ignored by serde).
+    let ours = serde_json::to_string(&Msg::Hello { name: "A".into(), version: "0.2.0".into() }).unwrap();
+    assert!(ours.contains(r#""name":"A""#));
 }

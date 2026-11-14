@@ -1,7 +1,7 @@
 //! Peer-to-peer transport (iroh/QUIC). Messages are JSON lines on one
 //! bidirectional stream per guest. Topology is a star around the host.
 
-use crate::sync::PlaybackState;
+use crate::sync::{Crop, PlaybackState};
 use anyhow::{Result, anyhow};
 use iroh::{Endpoint, EndpointAddr, endpoint::presets};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ pub enum Intent {
     Play,
     Pause { position: f64 },
     Seek { position: f64 },
+    SetCrop { crop: Crop },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -23,12 +24,24 @@ pub struct PeerInfo {
     pub is_host: bool,
     pub fingerprint: Option<String>,
     pub drift_ms: Option<f64>,
+    /// App version ("" = too old to say).
+    #[serde(default)]
+    pub version: String,
 }
 
+/// This build's version, exchanged so mismatched apps can be flagged.
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+// New fields are `#[serde(default)]` and new variants are ignored by older
+// apps (they drop lines they can't parse), so 0.1.x peers still interoperate.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum Msg {
     /// guest → host, first message.
-    Hello { name: String },
+    Hello {
+        name: String,
+        #[serde(default)]
+        version: String,
+    },
     /// guest → host clock probe; host answers with Pong.
     Ping { t0: f64 },
     Pong { t0: f64, host_ms: f64 },
@@ -43,6 +56,8 @@ pub enum Msg {
     },
     /// host → all: who is in the room.
     Peers(Vec<PeerInfo>),
+    /// host → all: the room's picture crop and who chose it.
+    Crop { crop: Crop, by: String },
 }
 
 #[derive(Debug)]
@@ -180,7 +195,10 @@ pub async fn join(
     );
     // A QUIC stream only reaches the other side once data is written,
     // so say hello right away.
-    let _ = tx.send(Msg::Hello { name });
+    let _ = tx.send(Msg::Hello {
+        name,
+        version: APP_VERSION.to_string(),
+    });
     // Keep the connection alive for as long as the endpoint lives.
     tokio::spawn(async move {
         conn.closed().await;

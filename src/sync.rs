@@ -143,6 +143,72 @@ impl ClockSync {
     }
 }
 
+/// A picture crop everyone in the room shares. Defined by aspect ratio of the
+/// *source* video, so every screen shows exactly the same part of the frame.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Crop {
+    #[default]
+    Original,
+    Wide,
+    Flat,
+    Scope,
+    Classic,
+}
+
+impl Crop {
+    pub const ALL: [Crop; 5] = [Crop::Original, Crop::Wide, Crop::Flat, Crop::Scope, Crop::Classic];
+
+    pub fn aspect(self) -> Option<f64> {
+        match self {
+            Crop::Original => None,
+            Crop::Wide => Some(16.0 / 9.0),
+            Crop::Flat => Some(1.85),
+            Crop::Scope => Some(2.39),
+            Crop::Classic => Some(4.0 / 3.0),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Crop::Original => "Original",
+            Crop::Wide => "16:9",
+            Crop::Flat => "1.85:1",
+            Crop::Scope => "2.39:1",
+            Crop::Classic => "4:3",
+        }
+    }
+}
+
+fn even(x: f64) -> u32 {
+    ((x / 2.0).round() * 2.0).max(2.0) as u32
+}
+
+/// mpv `video-crop` value ("WxH+X+Y", source pixels) for a centred crop to
+/// `crop`'s aspect ratio. `w`/`h` are the coded size, `dw`/`dh` the display
+/// size (they differ for anamorphic video). Empty string = no crop.
+pub fn crop_geometry(w: u32, h: u32, dw: u32, dh: u32, crop: Crop) -> String {
+    let Some(target) = crop.aspect() else {
+        return String::new();
+    };
+    if w == 0 || h == 0 || dw == 0 || dh == 0 {
+        return String::new();
+    }
+    let display = dw as f64 / dh as f64;
+    if ((display - target) / target).abs() < 0.01 {
+        return String::new(); // already that shape
+    }
+    if display > target {
+        // Too wide: trim the sides.
+        let cw = even(w as f64 * target / display).min(w);
+        format!("{cw}x{h}+{}+0", (w - cw) / 2)
+    } else {
+        // Too tall: trim top and bottom.
+        let ch = even(h as f64 * display / target).min(h);
+        format!("{w}x{ch}+0+{}", (h - ch) / 2)
+    }
+}
+
 pub fn format_time(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
     let (h, m, s) = (s / 3600, (s / 60) % 60, s % 60);
@@ -207,6 +273,36 @@ mod tests {
         c.add_sample(1_000.0, 6_010.0, 1_020.0); // rtt 20, offset 5000
         assert_eq!(c.offset(), 5_000.0);
         assert_eq!(c.rtt(), Some(20.0));
+    }
+
+    #[test]
+    fn crop_trims_bars_from_a_16x9_frame() {
+        // 2.39:1 from 1920x1080: keep the middle 1920x804
+        assert_eq!(crop_geometry(1920, 1080, 1920, 1080, Crop::Scope), "1920x804+0+138");
+        // 4:3 from 16:9 trims the sides
+        assert_eq!(crop_geometry(1920, 1080, 1920, 1080, Crop::Classic), "1440x1080+240+0");
+        // the test clip
+        assert_eq!(crop_geometry(320, 180, 320, 180, Crop::Scope), "320x134+0+23");
+    }
+
+    #[test]
+    fn crop_is_a_no_op_when_the_shape_already_matches() {
+        assert_eq!(crop_geometry(1920, 1080, 1920, 1080, Crop::Wide), "");
+        assert_eq!(crop_geometry(1920, 1080, 1920, 1080, Crop::Original), "");
+        assert_eq!(crop_geometry(0, 0, 0, 0, Crop::Scope), "");
+    }
+
+    #[test]
+    fn crop_handles_anamorphic_video() {
+        // DVD: 720x480 coded, shown as 16:9 (853x480). 2.39:1 trims rows only.
+        assert_eq!(crop_geometry(720, 480, 853, 480, Crop::Scope), "720x356+0+62");
+        // 4:3 trims coded columns in proportion: 720 * (4/3) / (853/480) ≈ 540
+        assert_eq!(crop_geometry(720, 480, 853, 480, Crop::Classic), "540x480+90+0");
+    }
+
+    #[test]
+    fn crop_serialises_as_snake_case() {
+        assert_eq!(serde_json::to_string(&Crop::Scope).unwrap(), "\"scope\"");
     }
 
     #[test]

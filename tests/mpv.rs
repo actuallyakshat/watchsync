@@ -120,3 +120,37 @@ async fn reports_exit_when_the_player_goes_away() {
     assert_eq!(exited, Ok(true));
     assert!(std::os::unix::net::UnixStream::connect(socket).is_err());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn crops_and_uncrops_the_picture() {
+    let (mpv, _rx) = launch(0.0).await;
+    loaded_pos(&mpv).await;
+    let mut size = None;
+    for _ in 0..50 {
+        if let Ok(s) = mpv.video_size().await {
+            size = Some(s);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(size, Some((320, 180, 320, 180)));
+
+    // Someone pressed `w` (panscan) locally; the crop must undo it.
+    ipc(mpv.socket(), serde_json::json!(["set_property", "panscan", 0.5]));
+    mpv.set_crop("320x134+0+23").await.unwrap();
+    let crop = ipc(mpv.socket(), serde_json::json!(["get_property", "video-crop"]));
+    assert_eq!(crop.as_str(), Some("320x134+0+23"));
+    let panscan = ipc(mpv.socket(), serde_json::json!(["get_property", "panscan"]));
+    assert_eq!(panscan.as_f64(), Some(0.0));
+    // The output picture really is cropped.
+    let out = ipc(mpv.socket(), serde_json::json!(["get_property", "video-out-params"]));
+    println!("video-out-params after crop: {out}");
+
+    mpv.set_crop("").await.unwrap();
+    let crop = ipc(mpv.socket(), serde_json::json!(["get_property", "video-crop"]));
+    println!("video-crop after clearing: {crop}");
+    assert!(
+        matches!(crop.as_str(), Some("") | Some("0x0+0+0") | Some("0x0")),
+        "crop should be cleared, got {crop}"
+    );
+}

@@ -9,6 +9,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use watchsync::engine::{self, FileStatus, Phase, Snapshot, UiCmd};
+use watchsync::sync::Crop;
 
 /// Max allowed position difference between two players while playing.
 /// 24fps → a frame is ~42ms; we demand < 2.5 frames.
@@ -68,6 +69,20 @@ impl Peer {
     }
 }
 
+impl Drop for Peer {
+    /// Leave the room so the engine closes its mpv. Otherwise the headless
+    /// players outlive the test process.
+    fn drop(&mut self) {
+        let _ = self.cmd.send_blocking(UiCmd::Leave);
+        let _ = eventually(Duration::from_secs(3), || {
+            while let Ok(s) = self.snaps.try_recv() {
+                self.last = s;
+            }
+            !self.last.player_open
+        });
+    }
+}
+
 /// Positions of two players, sampled back to back.
 fn positions(a: &Path, b: &Path) -> (f64, f64) {
     (time_pos(a), time_pos(b))
@@ -96,21 +111,41 @@ fn watch_party() {
         .unwrap();
 
     let mut guest = Peer::start("Riya");
-    guest.send(UiCmd::Join(code.clone()));
+    guest.send(UiCmd::Join { code: code.clone() });
     guest.wait("guest joined", 30, |s| s.phase == Phase::Room);
     host.wait("host sees Riya by name", 10, |s| {
         s.peers.iter().any(|p| p.name == "Riya")
     });
 
     // --- Same file ---------------------------------------------------------
-    host.send(UiCmd::OpenFile(clip.clone()));
-    guest.send(UiCmd::OpenFile(clip.clone()));
+    host.send(UiCmd::OpenFile { path: clip.clone() });
+    guest.send(UiCmd::OpenFile { path: clip.clone() });
     let hs = host.socket();
     let gs = guest.socket();
     host.wait("file match shown", 10, |s| {
         s.peers.len() == 2 && s.peers.iter().all(|p| p.file == FileStatus::Match)
     });
     assert!(paused(&hs) && paused(&gs), "should start paused");
+    let s = host.wait("no version warnings", 5, |s| s.peers.len() == 2);
+    assert!(s.peers.iter().all(|p| !p.outdated), "same build, no warnings");
+
+    // --- Guest picks a 2.39:1 crop: everyone gets the same picture ----------
+    guest.send(UiCmd::SetCrop { crop: Crop::Scope });
+    let crop_of = |sock: &PathBuf| {
+        ipc(sock, json!(["get_property", "video-crop"]))
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(
+        eventually(Duration::from_secs(5), || crop_of(&hs) == "320x134+0+23"
+            && crop_of(&gs) == "320x134+0+23"),
+        "both should crop: host {:?}, guest {:?}",
+        crop_of(&hs),
+        crop_of(&gs)
+    );
+    let s = host.wait("host shows crop", 5, |s| s.crop == Crop::Scope && s.crop_applied);
+    assert_eq!(s.crop_by.as_deref(), Some("Riya"));
 
     // --- Host presses Play --------------------------------------------------
     host.send(UiCmd::TogglePlay);
@@ -141,7 +176,7 @@ fn watch_party() {
     assert_in_sync("after guest seek", &hs, &gs, 0.05);
 
     // --- Host seeks back with the app's button -------------------------------
-    host.send(UiCmd::SeekBy(-100.0));
+    host.send(UiCmd::SeekBy { seconds: -100.0 });
     assert!(
         eventually(Duration::from_secs(4), || (time_pos(&gs) - 100.0).abs() < 0.5),
         "guest should follow the host's seek, is at {}",
@@ -172,9 +207,9 @@ fn watch_party() {
 
     // --- Late joiner lands where the room is ----------------------------------
     let mut late = Peer::start("Aman");
-    late.send(UiCmd::Join(code));
+    late.send(UiCmd::Join { code });
     late.wait("late joined", 30, |s| s.phase == Phase::Room);
-    late.send(UiCmd::OpenFile(clip.clone()));
+    late.send(UiCmd::OpenFile { path: clip.clone() });
     let ls = late.socket();
     assert!(
         eventually(Duration::from_secs(10), || {
@@ -185,5 +220,19 @@ fn watch_party() {
         time_pos(&ls)
     );
     assert_in_sync("late joiner", &hs, &ls, IN_SYNC);
+    assert!(
+        eventually(Duration::from_secs(5), || crop_of(&ls) == "320x134+0+23"),
+        "late joiner should get the room's crop, has {:?}",
+        crop_of(&ls)
+    );
+
+    // --- Back to the original picture for everyone ---------------------------
+    host.send(UiCmd::SetCrop { crop: Crop::Original });
+    assert!(
+        eventually(Duration::from_secs(5), || crop_of(&hs).is_empty()
+            && crop_of(&gs).is_empty()
+            && crop_of(&ls).is_empty()),
+        "crop should be cleared everywhere"
+    );
     host.wait("three people listed", 5, |s| s.peers.len() == 3);
 }

@@ -1,0 +1,30 @@
+[package]
+name = "watchsync-desktop"
+version = "0.2.0"
+description = "WatchSync for macOS"
+edition = "2024"
+default-run = "WatchSync"
+
+# macOS names the running app after its binary (menu bar, Dock, ⌘Tab).
+[[bin]]
+name = "WatchSync"
+path = "src/main.rs"
+
+[lib]
+name = "watchsync_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+watchsync = { path = "../.." }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-channel = "2"
+tokio = { version = "1", features = ["rt-multi-thread"] }

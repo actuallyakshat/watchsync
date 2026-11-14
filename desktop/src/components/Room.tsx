@@ -1,0 +1,179 @@
+import { useRef } from "react";
+import type { Crop, Snapshot } from "../api";
+import { formatTime, frameSize, movieTitle } from "../format";
+import { PauseIcon, PlayIcon, Skip10 } from "./Icons";
+
+export const CROPS: { id: Crop; label: string; aspect: number | null }[] = [
+  { id: "original", label: "Original", aspect: null },
+  { id: "wide", label: "16:9", aspect: 16 / 9 },
+  { id: "flat", label: "1.85:1", aspect: 1.85 },
+  { id: "scope", label: "2.39:1", aspect: 2.39 },
+  { id: "classic", label: "4:3", aspect: 4 / 3 },
+];
+
+interface Props {
+  snap: Snapshot;
+  onChoose: () => void;
+  onToggle: () => void;
+  onSeekBy: (seconds: number) => void;
+  onSeekTo: (position: number) => void;
+  onCrop: (crop: Crop) => void;
+}
+
+export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop }: Props) {
+  const host = snap.peers.find((p) => p.is_host);
+
+  return (
+    <>
+      {snap.file_name ? (
+        <MovieHeader fileName={snap.file_name} file={snap.is_host ? undefined : snap.my_file} hostHasFile={!!host && host.file !== "no_file"} onChoose={onChoose} />
+      ) : (
+        <ChooseMovie onChoose={onChoose} />
+      )}
+
+      <Player snap={snap} onToggle={onToggle} onSeekBy={onSeekBy} onSeekTo={onSeekTo} />
+
+      <section className="section" aria-labelledby="picture-head">
+        <div className="section-head">
+          <h2 id="picture-head">Picture</h2>
+          <span>{snap.crop_by && snap.crop !== "original" ? `Set by ${snap.crop_by}, for everyone` : "Applies to everyone in the room"}</span>
+        </div>
+        <div className="chips" role="radiogroup" aria-label="Picture crop">
+          {CROPS.map((c) => {
+            const f = frameSize(c.aspect);
+            return (
+              <button
+                key={c.id}
+                role="radio"
+                aria-checked={snap.crop === c.id}
+                className={`chip ${snap.crop === c.id ? "on" : ""}`}
+                onClick={() => onCrop(c.id)}
+              >
+                <span className="frame">
+                  <i style={{ width: f.w, height: f.h }} />
+                </span>
+                {c.label}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function MovieHeader({
+  fileName,
+  file,
+  hostHasFile,
+  onChoose,
+}: {
+  fileName: string;
+  file?: string;
+  hostHasFile: boolean;
+  onChoose: () => void;
+}) {
+  const { title, year } = movieTitle(fileName);
+  let note: { text: string; tone: string } | null = null;
+  if (file === "match" && hostHasFile) note = { text: "Same file as the host", tone: "match" };
+  if (file === "mismatch") note = { text: "Different file from the host", tone: "mismatch" };
+
+  return (
+    <header>
+      <h1 className="movie-title">
+        {title}
+        {year && <span className="year"> {year}</span>}
+      </h1>
+      <div className="movie-sub">
+        {note && <span className={`match-note ${note.tone}`}>{note.text}</span>}
+        <span className="file-name mono" title={fileName}>
+          {fileName}
+        </span>
+        <button className="link" onClick={onChoose}>
+          Change
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function ChooseMovie({ onChoose }: { onChoose: () => void }) {
+  return (
+    <header>
+      <h1 className="movie-title">Choose your copy of the movie</h1>
+      <div className="choose">
+        <p>Everyone opens the same movie file from their own Mac. WatchSync checks that the copies match.</p>
+        <button className="primary" onClick={onChoose}>
+          Choose movie…
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function Player({
+  snap,
+  onToggle,
+  onSeekBy,
+  onSeekTo,
+}: {
+  snap: Snapshot;
+  onToggle: () => void;
+  onSeekBy: (s: number) => void;
+  onSeekTo: (p: number) => void;
+}) {
+  const track = useRef<HTMLDivElement>(null);
+  const ready = snap.player_open && snap.duration > 0;
+  const pct = ready ? Math.min(100, (snap.position / snap.duration) * 100) : 0;
+
+  const seekFromClick = (e: React.MouseEvent) => {
+    if (!ready || !track.current) return;
+    const r = track.current.getBoundingClientRect();
+    onSeekTo(((e.clientX - r.left) / r.width) * snap.duration);
+  };
+
+  return (
+    <div className={`player ${snap.player_open ? "" : "off"}`}>
+      <div
+        ref={track}
+        className={`track ${ready ? "" : "disabled"}`}
+        onClick={seekFromClick}
+        role="slider"
+        aria-label="Position"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(snap.duration)}
+        aria-valuenow={Math.round(snap.position)}
+      >
+        <div className="track-fill" style={{ width: `${pct}%` }} />
+        <div className="track-knob" style={{ left: `${pct}%` }} />
+      </div>
+      <div className="times mono">
+        <span className="now">{formatTime(snap.position)}</span>
+        <span>{ready ? formatTime(snap.duration) : "--:--"}</span>
+      </div>
+      <div className="controls">
+        <button className="skip" onClick={() => onSeekBy(-10)} disabled={!ready} aria-label="Back 10 seconds">
+          <Skip10 back />
+        </button>
+        <button className="play" onClick={onToggle} disabled={!snap.player_open} aria-label={snap.playing ? "Pause for everyone" : "Play for everyone"}>
+          {snap.playing ? <PauseIcon /> : <PlayIcon />}
+        </button>
+        <button className="skip" onClick={() => onSeekBy(10)} disabled={!ready} aria-label="Forward 10 seconds">
+          <Skip10 />
+        </button>
+      </div>
+      <p className="activity" aria-live="polite">
+        {snap.last_action ? (
+          <>
+            <span className="live" />
+            {snap.last_action}
+          </>
+        ) : snap.player_open ? (
+          "Space pauses for everyone, here or in the movie window."
+        ) : (
+          "Controls work once you've chosen your copy of the movie."
+        )}
+      </p>
+    </div>
+  );
+}

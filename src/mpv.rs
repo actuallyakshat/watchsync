@@ -34,6 +34,16 @@ pub fn kill_player() {
     }
 }
 
+/// mpv options that change which part of the picture is visible. Reset at
+/// launch and whenever the room's crop is applied, so they can't diverge.
+const VIEW_RESET: [(&str, &str); 5] = [
+    ("panscan", "0"),
+    ("video-zoom", "0"),
+    ("video-pan-x", "0"),
+    ("video-pan-y", "0"),
+    ("video-aspect-override", "no"),
+];
+
 static SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Extra mpv arguments for every launch. Tests use this to run headless.
@@ -132,6 +142,8 @@ impl Mpv {
             .arg("--osd-bar=yes")
             .arg("--sub-auto=fuzzy")
             .arg("--hr-seek=yes")
+            // Everyone must see the same picture: start from a neutral view.
+            .args(VIEW_RESET.iter().map(|(k, v)| format!("--{k}={v}")))
             .arg("--title=WatchSync — ${filename}")
             .args(EXTRA_ARGS.get().into_iter().flatten())
             .arg("--")
@@ -269,6 +281,26 @@ impl Mpv {
     pub async fn seek(&self, position: f64) -> Result<()> {
         self.command(json!(["seek", position.max(0.0), "absolute+exact"]))
             .await?;
+        Ok(())
+    }
+
+    /// Coded and display size of the video: (w, h, dw, dh).
+    /// Fails until the first frame has been decoded.
+    pub async fn video_size(&self) -> Result<(u32, u32, u32, u32)> {
+        let p = self.command(json!(["get_property", "video-params"])).await?;
+        let get = |k: &str| p[k].as_u64().map(|v| v as u32);
+        match (get("w"), get("h"), get("dw"), get("dh")) {
+            (Some(w), Some(h), Some(dw), Some(dh)) => Ok((w, h, dw, dh)),
+            _ => Err(anyhow!("video size unavailable")),
+        }
+    }
+
+    /// Set `video-crop` ("" = none) and undo any local zoom/pan.
+    pub async fn set_crop(&self, geometry: &str) -> Result<()> {
+        for (k, v) in VIEW_RESET {
+            self.command(json!(["set_property", k, v])).await?;
+        }
+        self.command(json!(["set_property", "video-crop", geometry])).await?;
         Ok(())
     }
 

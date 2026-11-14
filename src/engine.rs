@@ -6,8 +6,10 @@ use crate::fingerprint::fingerprint;
 use crate::mpv::{Mpv, MpvEvent};
 use crate::net::{self, Intent, Msg, NetEvent, PeerInfo};
 use crate::sync::{
-    ClockSync, Correction, PLAY_LEAD_MS, PlaybackState, correction, format_time, now_ms,
+    ClockSync, Correction, Crop, PLAY_LEAD_MS, PlaybackState, correction, crop_geometry,
+    format_time, now_ms,
 };
+use serde::{Deserialize, Serialize};
 use iroh::Endpoint;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,15 +18,21 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::{MissedTickBehavior, timeout};
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiCmd {
     Host,
-    Join(String),
-    OpenFile(PathBuf),
+    Join { code: String },
+    OpenFile { path: PathBuf },
     TogglePlay,
-    SeekBy(f64),
+    SeekBy { seconds: f64 },
+    SeekTo { position: f64 },
+    SetCrop { crop: Crop },
+    Leave,
 }
 
-#[derive(Clone, Copy, Default, PartialEq)]
+#[derive(Clone, Copy, Default, PartialEq, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Phase {
     #[default]
     Home,
@@ -32,23 +40,28 @@ pub enum Phase {
     Room,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FileStatus {
+    #[default]
     NoFile,
     Match,
     Mismatch,
     Unknown,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PeerRow {
     pub name: String,
     pub is_host: bool,
     pub file: FileStatus,
     pub drift_ms: Option<f64>,
+    pub version: String,
+    /// Runs a different WatchSync version than the host.
+    pub outdated: bool,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug, Serialize)]
 pub struct Snapshot {
     pub name: String,
     pub phase: Phase,
@@ -67,6 +80,13 @@ pub struct Snapshot {
     pub my_drift_ms: Option<f64>,
     /// mpv's control socket (for tests).
     pub player_socket: Option<PathBuf>,
+    /// Whether this player's file matches the host's.
+    pub my_file: FileStatus,
+    /// The room's shared picture crop.
+    pub crop: Crop,
+    pub crop_by: Option<String>,
+    /// Whether the crop is actually applied to this player.
+    pub crop_applied: bool,
 }
 
 enum Role {
@@ -80,6 +100,7 @@ struct Peer {
     name: String,
     fingerprint: Option<String>,
     drift_ms: Option<f64>,
+    version: String,
 }
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -118,6 +139,12 @@ struct Engine {
     /// Don't fight mpv's pause state until then (we asked the host for a change).
     hold_until: Instant,
     ticks: u64,
+
+    /// The room's picture crop (host decides, everyone applies).
+    crop: Crop,
+    crop_by: Option<String>,
+    /// (player generation, crop) last applied to mpv.
+    applied_crop: Option<(u64, Crop)>,
 }
 
 pub async fn run(
@@ -153,6 +180,9 @@ pub async fn run(
         quiet_until: now,
         hold_until: now,
         ticks: 0,
+        crop: Crop::Original,
+        crop_by: None,
+        applied_crop: None,
     };
     e.publish();
 
@@ -227,7 +257,7 @@ impl Engine {
                     }
                 }
             }
-            UiCmd::Join(code) if self.phase == Phase::Home => {
+            UiCmd::Join { code } if self.phase == Phase::Home => {
                 self.phase = Phase::Connecting;
                 self.publish();
                 let joining = net::join(&code, self.name.clone(), self.net_tx.clone());
@@ -251,7 +281,7 @@ impl Engine {
                     }
                 }
             }
-            UiCmd::OpenFile(path) => self.open_file(path).await,
+            UiCmd::OpenFile { path } => self.open_file(path).await,
             UiCmd::TogglePlay => {
                 if self.state.playing {
                     let position = self.current_position().await;
@@ -260,14 +290,61 @@ impl Engine {
                     self.submit(Intent::Play).await;
                 }
             }
-            UiCmd::SeekBy(delta) => {
-                let mut position = (self.state.expected_position(self.host_now()) + delta).max(0.0);
-                if self.duration > 0.0 {
-                    position = position.min(self.duration - 1.0);
-                }
-                self.submit(Intent::Seek { position }).await;
+            UiCmd::SeekBy { seconds } => {
+                let position = self.state.expected_position(self.host_now()) + seconds;
+                self.seek_to(position).await;
             }
+            UiCmd::SeekTo { position } => self.seek_to(position).await,
+            UiCmd::SetCrop { crop } => {
+                if crop != self.crop {
+                    self.submit(Intent::SetCrop { crop }).await;
+                }
+            }
+            UiCmd::Leave => self.leave(),
             _ => {}
+        }
+    }
+
+    async fn seek_to(&mut self, position: f64) {
+        let mut position = position.max(0.0);
+        if self.duration > 0.0 {
+            position = position.min(self.duration - 1.0);
+        }
+        self.submit(Intent::Seek { position }).await;
+    }
+
+    /// Leave the room and close the player. (Hosting ends the room.)
+    fn leave(&mut self) {
+        self.role = Role::None;
+        self._endpoint = None;
+        self.code = None;
+        self.phase = Phase::Home;
+        self.room_peers.clear();
+        self.state = PlaybackState::default();
+        self.clock = ClockSync::default();
+        self.crop = Crop::Original;
+        self.crop_by = None;
+        self.mpv = None;
+        self.mpv_gen += 1;
+        self.applied_crop = None;
+        self.drift_ms = None;
+    }
+
+    /// Apply the room's crop to the player if it isn't already. Needs the
+    /// video size, which exists only after the first frame is decoded, so
+    /// this is retried from the heartbeat until it sticks.
+    async fn apply_crop(&mut self) {
+        let Some(mpv) = self.mpv.clone() else { return };
+        let wanted = (self.mpv_gen, self.crop);
+        if self.applied_crop == Some(wanted) {
+            return;
+        }
+        let Ok((w, h, dw, dh)) = mpv.video_size().await else {
+            return;
+        };
+        let geometry = crop_geometry(w, h, dw, dh, self.crop);
+        if mpv.set_crop(&geometry).await.is_ok() {
+            self.applied_crop = Some(wanted);
         }
     }
 
@@ -313,7 +390,9 @@ impl Engine {
                 self.mpv_paused = true;
                 self.speed = 1.0;
                 self.drift_ms = None;
+                self.applied_crop = None;
                 self.resync().await;
+                self.apply_crop().await;
             }
             Err(e) => self.error = Some(e.to_string()),
         }
@@ -356,6 +435,14 @@ impl Engine {
                 s.position = position.max(0.0);
                 s.anchor_ms = now;
                 s.action = format!("paused at {}", format_time(position));
+            }
+            Intent::SetCrop { crop } => {
+                self.crop = crop;
+                self.crop_by = Some(by.clone());
+                self.broadcast(Msg::Crop { crop, by: by.clone() });
+                self.osd(&format!("{by} set the picture to {}", crop.label())).await;
+                self.apply_crop().await;
+                return;
             }
             Intent::Seek { position } => {
                 s.position = position.max(0.0);
@@ -482,6 +569,7 @@ impl Engine {
         {
             self.duration = mpv.duration().await.unwrap_or(0.0);
         }
+        self.apply_crop().await;
         if self.is_host() {
             self.refresh_peers();
         } else if let Role::Guest { tx } = &self.role {
@@ -517,6 +605,7 @@ impl Engine {
                 }
             }
             MpvEvent::PlaybackRestart => {
+                self.apply_crop().await;
                 if Instant::now() < self.quiet_until {
                     return; // a seek we made
                 }
@@ -549,6 +638,7 @@ impl Engine {
                             name: "Someone".into(),
                             fingerprint: None,
                             drift_ms: None,
+                            version: String::new(),
                         },
                     );
                 }
@@ -568,6 +658,15 @@ impl Engine {
                 Msg::Pong { t0, host_ms } => self.clock.add_sample(t0, host_ms, now_ms()),
                 Msg::State(s) => self.apply_state(s).await,
                 Msg::Peers(list) => self.room_peers = list,
+                Msg::Crop { crop, by } => {
+                    if crop != self.crop {
+                        self.osd(&format!("{by} set the picture to {}", crop.label()))
+                            .await;
+                    }
+                    self.crop = crop;
+                    self.crop_by = Some(by);
+                    self.apply_crop().await;
+                }
                 _ => {}
             },
             NetEvent::HostLost => {
@@ -589,9 +688,14 @@ impl Engine {
             return;
         };
         match msg {
-            Msg::Hello { name } => {
+            Msg::Hello { name, version } => {
                 peer.name = name.clone();
+                peer.version = version;
                 let _ = peer.tx.send(Msg::State(self.state.clone()));
+                let _ = peer.tx.send(Msg::Crop {
+                    crop: self.crop,
+                    by: self.crop_by.clone().unwrap_or_default(),
+                });
                 self.osd(&format!("{name} joined")).await;
                 self.refresh_peers();
             }
@@ -634,6 +738,7 @@ impl Engine {
             is_host: true,
             fingerprint: self.fingerprint.clone(),
             drift_ms: self.drift_ms,
+            version: net::APP_VERSION.to_string(),
         }];
         let mut others: Vec<_> = peers.values().collect();
         others.sort_by(|a, b| a.name.cmp(&b.name));
@@ -642,6 +747,7 @@ impl Engine {
             is_host: false,
             fingerprint: p.fingerprint.clone(),
             drift_ms: p.drift_ms,
+            version: p.version.clone(),
         }));
         self.room_peers = list.clone();
         self.broadcast(Msg::Peers(list));
@@ -656,24 +762,25 @@ impl Engine {
     // ------------------------------------------------------------ snapshot
 
     fn publish(&self) {
-        let host_fp = self
-            .room_peers
-            .iter()
-            .find(|p| p.is_host)
-            .and_then(|p| p.fingerprint.clone());
+        let host = self.room_peers.iter().find(|p| p.is_host);
+        let host_fp = host.and_then(|p| p.fingerprint.clone());
+        let host_version = host.map(|p| p.version.clone()).unwrap_or_default();
+        let status = |fp: &Option<String>| match (fp, &host_fp) {
+            (None, _) => FileStatus::NoFile,
+            (Some(a), Some(b)) if a == b => FileStatus::Match,
+            (Some(_), Some(_)) => FileStatus::Mismatch,
+            (Some(_), None) => FileStatus::Unknown,
+        };
         let peers = self
             .room_peers
             .iter()
             .map(|p| PeerRow {
                 name: p.name.clone(),
                 is_host: p.is_host,
-                file: match (&p.fingerprint, &host_fp) {
-                    (None, _) => FileStatus::NoFile,
-                    (Some(a), Some(b)) if a == b => FileStatus::Match,
-                    (Some(_), Some(_)) => FileStatus::Mismatch,
-                    (Some(_), None) => FileStatus::Unknown,
-                },
+                file: status(&p.fingerprint),
                 drift_ms: p.drift_ms,
+                version: p.version.clone(),
+                outdated: !p.is_host && p.version != host_version,
             })
             .collect();
         let snapshot = Snapshot {
@@ -692,6 +799,10 @@ impl Engine {
             error: self.error.clone(),
             my_drift_ms: self.drift_ms,
             player_socket: self.mpv.as_ref().map(|m| m.socket().to_path_buf()),
+            my_file: status(&self.fingerprint),
+            crop: self.crop,
+            crop_by: self.crop_by.clone(),
+            crop_applied: self.applied_crop == Some((self.mpv_gen, self.crop)),
         };
         // Bounded(1) channel: replace any snapshot the UI hasn't drawn yet.
         let _ = self.ui.force_send(snapshot);
