@@ -228,3 +228,31 @@ fn comfort_settings_and_tracks_are_personal() {
     let rs = riya.socket();
     assert!(eventually(Duration::from_secs(5), || filters(&rs) == 2));
 }
+
+#[test]
+fn a_guest_without_the_movie_is_offered_their_copy_found_by_name() {
+    headless();
+    let clip = clip();
+    // Spotlight must already know the test clip (it indexes it in the background).
+    if watchsync::find::find_by_name("clip.mkv").as_deref() != Some(clip.as_path()) {
+        eprintln!("skipping: Spotlight hasn't indexed {}", clip.display());
+        return;
+    }
+    let mut host = Peer::start_with("Host", fast());
+    host.send(UiCmd::Host);
+    let code = host.wait("room", 30, |s| s.code.is_some()).code.unwrap();
+    let mut riya = Peer::start_with("Riya", fast());
+    riya.send(UiCmd::Join { code });
+    riya.wait("joined", 30, |s| s.phase == Phase::Room);
+    assert!(riya.now().found.is_none(), "nothing to look for yet");
+
+    host.send(UiCmd::OpenFile { path: clip.clone() });
+    let s = riya.wait("found by name", 10, |s| s.found.is_some());
+    assert_eq!(s.found.as_ref().unwrap().path, clip);
+    assert!(!s.player_open, "only suggested, not opened");
+
+    // Opening it gives the same file as the host.
+    riya.send(UiCmd::OpenFile { path: s.found.unwrap().path });
+    let s = riya.wait("opened", 15, |s| s.player_open && s.my_file == watchsync::engine::FileStatus::Match);
+    assert!(s.found.is_none(), "suggestion goes away once a movie is open");
+}

@@ -39,6 +39,8 @@ Both also install WatchSync's helper apps, mpv (the video player) and croc
 - **Just for you**: your own audio track and subtitles, volume levelling and
   dialogue boost.
 - **File check**: shows whether everyone's copy matches the host's.
+- **Finds your copy**: if a file with the host's exact name is on your Mac
+  (Spotlight), WatchSync suggests opening it.
 - **Send the movie**: *Share my copy*, and friends without it click *Get
   Riya's copy*. Sent with [croc](https://github.com/schollz/croc), one
   private code per download, checked on arrival, saved to

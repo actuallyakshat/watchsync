@@ -72,6 +72,9 @@ pub struct PeerInfo {
     /// The peer's own address code, so others can reach it if it becomes host.
     #[serde(default)]
     pub code: String,
+    /// The movie's file name (sent for the host, so friends can find theirs).
+    #[serde(default)]
+    pub file_name: Option<String>,
 }
 
 /// This build's version, exchanged so mismatched apps can be flagged.

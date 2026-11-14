@@ -431,3 +431,16 @@ test("settings: helper apps, with a one-click install for what's missing", async
   const { invoke } = await import("@tauri-apps/api/core");
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("install_player"));
 });
+
+test("suggests the host's movie when it's found on this Mac", async () => {
+  render(<App />);
+  const path = "/Users/riya/Downloads/Movies/The Odyssey 2026 1080p BluRay HEVC x265 5.1 BONE.mkv";
+  await act(async () =>
+    emit({ ...room, is_host: false, file_name: null, player_open: false, my_file: "no_file", found: { path, folder: "Downloads › Movies" } }),
+  );
+  expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Found The Odyssey on your Mac");
+  expect(screen.getByText(/It's in Downloads › Movies/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Open it" }));
+  expect(sent).toContainEqual({ type: "open_file", path });
+  expect(screen.getByRole("button", { name: "Choose a different file…" })).toBeInTheDocument();
+});

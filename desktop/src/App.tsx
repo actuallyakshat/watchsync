@@ -204,6 +204,7 @@ export function App() {
               onCrop={(crop) => void send({ type: "set_crop", crop })}
               onTrack={(kind, id) => void send({ type: "set_track", kind, id })}
               onComfort={setComfort}
+              onOpenFound={(path) => void send({ type: "open_file", path })}
               files={{
                 crocInstalled: setup?.croc ?? false,
                 hasBrew: setup?.has_brew ?? false,

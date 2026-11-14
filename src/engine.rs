@@ -238,6 +238,15 @@ pub struct Snapshot {
     /// This person offers their open movie.
     pub sharing: bool,
     pub transfers: Vec<TransferView>,
+    /// The host's movie, found on this Mac by its exact name (not opened yet).
+    pub found: Option<FoundFile>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FoundFile {
+    pub path: PathBuf,
+    /// "Downloads › Movies"
+    pub folder: String,
 }
 
 enum Role {
@@ -298,6 +307,9 @@ struct Engine {
     next_transfer: u64,
     /// The open movie's path.
     file_path: Option<PathBuf>,
+    /// The host's file name we last looked for, and what we found.
+    searched_for: Option<String>,
+    found: Option<FoundFile>,
     name: String,
     ui: async_channel::Sender<Snapshot>,
     net_tx: mpsc::UnboundedSender<NetEvent>,
@@ -376,6 +388,8 @@ pub async fn run_with(
         transfers: Vec::new(),
         next_transfer: 1,
         file_path: None,
+        searched_for: None,
+        found: None,
         name,
         ui,
         net_tx,
@@ -701,6 +715,13 @@ impl Engine {
         self.chat.clear();
         self.my_offer = None;
         self.offers.clear();
+        self.searched_for = None;
+        self.found = None;
+        // The next room starts without a movie.
+        self.file_path = None;
+        self.file_name = None;
+        self.fingerprint = None;
+        self.duration = 0.0;
         for t in &mut self.transfers {
             if t.croc.take().is_some() {
                 t.view.state = TransferState::Cancelled;
@@ -759,6 +780,7 @@ impl Engine {
             self.stop_sharing(); // the offer was for the previous file
         }
         self.file_path = Some(path.clone());
+        self.found = None;
 
         // Replace any previous player. Events are tagged with a generation so
         // the old player's "exited" event doesn't close the new one.
@@ -982,6 +1004,7 @@ impl Engine {
         self.apply_crop().await;
         self.apply_comfort().await;
         self.expire_transfers();
+        self.look_for_host_movie().await;
         // The person may switch tracks in the movie window too (j, #).
         if let Some(mpv) = self.mpv.clone() {
             self.tracks = mpv.tracks().await.unwrap_or_default();
@@ -1291,6 +1314,30 @@ impl Engine {
         for name in gone {
             self.osd(&format!("{name} left")).await;
         }
+    }
+
+    /// Guest without a movie: look for the host's file, by exact name, once
+    /// per name. Suggests it; opening is the person's choice.
+    async fn look_for_host_movie(&mut self) {
+        if self.is_host() || self.file_path.is_some() {
+            return;
+        }
+        let Some(name) = self.room_peers.iter().find(|p| p.is_host).and_then(|p| p.file_name.clone())
+        else {
+            return;
+        };
+        if self.searched_for.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        self.searched_for = Some(name.clone());
+        self.found = tokio::task::spawn_blocking(move || crate::find::find_by_name(&name))
+            .await
+            .ok()
+            .flatten()
+            .map(|path| FoundFile {
+                folder: crate::find::describe_folder(&path),
+                path,
+            });
     }
 
     // ---------------------------------------------------------------- files
@@ -1714,6 +1761,7 @@ impl Engine {
             version: net::APP_VERSION.to_string(),
             id: my_id,
             code: my_code,
+            file_name: self.file_name.clone(),
         }];
         // Join order: this is also the order of succession.
         let mut others: Vec<_> = peers.iter().collect();
@@ -1726,6 +1774,7 @@ impl Engine {
             version: p.version.clone(),
             id: p.id.clone(),
             code: p.code.clone(),
+            file_name: None,
         }));
         self.room_peers = list.clone();
         self.broadcast(Msg::Peers(list));
@@ -1799,6 +1848,7 @@ impl Engine {
             },
             sharing: self.my_offer.is_some(),
             transfers: self.transfers.iter().map(|t| t.view.clone()).collect(),
+            found: self.found.clone(),
         };
         // Bounded(1) channel: replace any snapshot the UI hasn't drawn yet.
         let _ = self.ui.force_send(snapshot);

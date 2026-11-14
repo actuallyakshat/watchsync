@@ -102,6 +102,8 @@ export interface Snapshot {
   offers: Offer[];
   sharing: boolean;
   transfers: Transfer[];
+  /** The host's movie, found on this Mac by its exact name. */
+  found: { path: string; folder: string } | null;
 }
 
 export type Command =
@@ -165,4 +167,5 @@ export const EMPTY: Snapshot = {
   offers: [],
   sharing: false,
   transfers: [],
+  found: null,
 };

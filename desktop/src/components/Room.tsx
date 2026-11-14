@@ -30,9 +30,10 @@ interface Props {
   onTrack: (kind: TrackKind, id: number | null) => void;
   onComfort: (c: Comfort) => void;
   files: Omit<React.ComponentProps<typeof Files>, "snap">;
+  onOpenFound: (path: string) => void;
 }
 
-export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop, onTrack, onComfort, files }: Props) {
+export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop, onTrack, onComfort, files, onOpenFound }: Props) {
   const host = snap.peers.find((p) => p.is_host);
 
   return (
@@ -40,7 +41,7 @@ export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop, onT
       {snap.file_name ? (
         <MovieHeader fileName={snap.file_name} file={snap.is_host ? undefined : snap.my_file} hostHasFile={!!host && host.file !== "no_file"} onChoose={onChoose} />
       ) : (
-        <ChooseMovie onChoose={onChoose} />
+        <ChooseMovie onChoose={onChoose} found={snap.found} onOpen={onOpenFound} />
       )}
 
       <Player snap={snap} onToggle={onToggle} onSeekBy={onSeekBy} onSeekTo={onSeekTo} />
@@ -122,7 +123,40 @@ function MovieHeader({
   );
 }
 
-function ChooseMovie({ onChoose }: { onChoose: () => void }) {
+function ChooseMovie({
+  onChoose,
+  found,
+  onOpen,
+}: {
+  onChoose: () => void;
+  found: Snapshot["found"];
+  onOpen: (path: string) => void;
+}) {
+  if (found) {
+    const name = found.path.split("/").pop() ?? found.path;
+    const { title } = movieTitle(name);
+    return (
+      <header>
+        <h1 className="movie-title">Found {title} on your Mac</h1>
+        <div className="choose">
+          <p>
+            It's in {found.folder}, with the same file name as the host's copy.
+          </p>
+          <p className="file-name mono found-name" title={found.path}>
+            {name}
+          </p>
+          <div className="row-actions">
+            <button className="primary" onClick={() => onOpen(found.path)}>
+              Open it
+            </button>
+            <button className="ghost" onClick={onChoose}>
+              Choose a different file…
+            </button>
+          </div>
+        </div>
+      </header>
+    );
+  }
   return (
     <header>
       <h1 className="movie-title">Choose your copy of the movie</h1>

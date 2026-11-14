@@ -1234,3 +1234,13 @@ ul {
   align-items: center;
   gap: 9px;
 }
+
+.found-name {
+  display: block;
+  margin-top: 8px;
+  max-width: 100%;
+}
+
+.choose .row-actions .primary {
+  margin-top: 0;
+}
