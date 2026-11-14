@@ -6262,7 +6262,7 @@ dependencies = [
 
 [[package]]
 name = "watchsync"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -6276,7 +6276,7 @@ dependencies = [
 
 [[package]]
 name = "watchsync-desktop"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-channel",
  "serde",
