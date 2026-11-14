@@ -59,3 +59,15 @@ export function frameSize(aspect: number | null): { w: number; h: number } {
   if (aspect === null) return { w: W, h: H };
   return aspect >= W / H ? { w: W, h: Math.round(W / aspect) } : { w: Math.round(H * aspect), h: H };
 }
+
+/** 4_471_000_000 → "4.2 GB". */
+export function formatSize(bytes: number): string {
+  const units = ["bytes", "KB", "MB", "GB", "TB"];
+  let v = bytes;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return i === 0 ? `${v} bytes` : `${v >= 10 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}

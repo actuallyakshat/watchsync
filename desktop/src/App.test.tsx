@@ -7,7 +7,7 @@ import { EMPTY } from "./api";
 // --- Tauri, mocked ---------------------------------------------------------
 const sent: unknown[] = [];
 let emit: (s: Snapshot) => void = () => {};
-let setup = { installed: true, has_brew: true };
+let setup = { installed: true, has_brew: true, croc: true };
 let pendingUpdate: { version: string; downloadAndInstall: () => Promise<void> } | null = null;
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -84,7 +84,7 @@ const room: Snapshot = {
 
 beforeEach(() => {
   sent.length = 0;
-  setup = { installed: true, has_brew: true };
+  setup = { installed: true, has_brew: true, croc: true };
   pendingUpdate = null;
   checkFails = false;
   askAnswer = true;
@@ -143,7 +143,7 @@ test("guest sees whether their copy matches the host's", async () => {
 });
 
 test("shows player setup until mpv is installed", async () => {
-  setup = { installed: false, has_brew: false };
+  setup = { installed: false, has_brew: false, croc: false };
   render(<App />);
   expect(await screen.findByText("One more thing.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Copy command" })).toBeInTheDocument();
@@ -321,4 +321,95 @@ test("shows that it's reconnecting, calmly", async () => {
   render(<App />);
   await act(async () => emit({ ...room, is_host: false, reconnecting: true }));
   expect(screen.getByRole("status")).toHaveTextContent("Reconnecting to the room. Your movie keeps playing.");
+});
+
+const offer = {
+  offer_id: "o1",
+  from_id: "riya-id",
+  from: "Riya",
+  name: "The Odyssey 2026 1080p BluRay HEVC x265 5.1 BONE.mkv",
+  size: 4470387000,
+  fingerprint: "abc",
+};
+
+test("movie file: get a friend's copy, watch its progress, cancel", async () => {
+  render(<App />);
+  await act(async () => emit({ ...room, is_host: false, file_name: null, player_open: false, my_file: "no_file", offers: [offer] }));
+  expect(screen.getByText(/can send you their copy of The Odyssey/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Get Riya's copy (4.2 GB)" }));
+  expect(sent).toContainEqual({ type: "get_file", offer_id: "o1" });
+
+  await act(async () =>
+    emit({
+      ...room,
+      is_host: false,
+      file_name: null,
+      my_file: "no_file",
+      offers: [offer],
+      transfers: [
+        {
+          id: 7,
+          direction: "receive",
+          peer: "Riya",
+          file: offer.name,
+          size: offer.size,
+          progress: { percent: 45, amount: "1.9/4.2 GB", speed: "12 MB/s", eta: "3m10s" },
+          state: "running",
+          message: null,
+          path: null,
+        },
+      ],
+    }),
+  );
+  expect(screen.getByText("Getting The Odyssey from Riya")).toBeInTheDocument();
+  expect(screen.getByText("45%, 12 MB/s, 3m10s left")).toBeInTheDocument();
+  expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "45");
+  expect(screen.getByRole("button", { name: /Get Riya's copy/ })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(sent).toContainEqual({ type: "cancel_transfer", id: 7 });
+});
+
+test("movie file: no offer shown when you already have the right copy", async () => {
+  render(<App />);
+  await act(async () => emit({ ...room, is_host: false, my_file: "match", offers: [offer] }));
+  expect(screen.queryByRole("button", { name: /Get Riya's copy/ })).not.toBeInTheDocument();
+});
+
+test("movie file: share your copy; croc is offered only when needed", async () => {
+  setup = { installed: true, has_brew: true, croc: false };
+  render(<App />);
+  await act(async () => emit(room));
+  expect(screen.queryByText(/Sending movies uses croc/)).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Share my copy" }));
+  expect(sent).not.toContainEqual({ type: "share_file" });
+  expect(screen.getByText(/Sending movies uses croc/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Install croc" })).toBeInTheDocument();
+});
+
+test("movie file: failed downloads say why and can be retried", async () => {
+  render(<App />);
+  await act(async () =>
+    emit({
+      ...room,
+      is_host: false,
+      my_file: "no_file",
+      offers: [offer],
+      transfers: [
+        {
+          id: 3,
+          direction: "receive",
+          peer: "Riya",
+          file: offer.name,
+          size: offer.size,
+          progress: { percent: 12, amount: null, speed: null, eta: null },
+          state: "failed",
+          message: "Couldn't connect to Riya",
+          path: null,
+        },
+      ],
+    }),
+  );
+  expect(screen.getByText("Couldn't connect to Riya")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(sent).toContainEqual({ type: "get_file", offer_id: "o1" });
 });

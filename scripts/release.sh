@@ -77,6 +77,7 @@ cask "watchsync" do
   homepage "https://github.com/$REPO"
 
   depends_on formula: "mpv"
+  depends_on formula: "croc"
   depends_on :macos
 
   app "WatchSync.app"

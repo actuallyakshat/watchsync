@@ -5,7 +5,7 @@
 use serde::Serialize;
 use tauri::{Emitter, Manager, RunEvent, State};
 use watchsync::engine::{self, Snapshot, UiCmd};
-use watchsync::mpv;
+use watchsync::{mpv, share};
 
 struct Bridge {
     cmd: async_channel::Sender<UiCmd>,
@@ -23,6 +23,8 @@ struct PlayerSetup {
     installed: bool,
     /// Homebrew is available to install it.
     has_brew: bool,
+    /// croc (for sending movies) is installed.
+    croc: bool,
 }
 
 #[tauri::command]
@@ -30,7 +32,17 @@ fn player_setup() -> PlayerSetup {
     PlayerSetup {
         installed: mpv::is_installed(),
         has_brew: mpv::find_brew().is_some(),
+        croc: share::is_installed(),
     }
+}
+
+/// `brew install croc`.
+#[tauri::command]
+async fn install_croc() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(share::install_with_brew)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// `brew install mpv`. Takes a minute or two.
@@ -75,7 +87,7 @@ pub fn run() {
         // watchsync://join/<code> links open the app and join the room.
         .plugin(tauri_plugin_deep_link::init())
         .manage(Bridge { cmd: cmd_tx })
-        .invoke_handler(tauri::generate_handler![send, player_setup, install_player])
+        .invoke_handler(tauri::generate_handler![send, player_setup, install_player, install_croc])
         .setup(move |app| {
             // Push every engine snapshot to the window.
             let handle = app.handle().clone();
@@ -94,8 +106,10 @@ pub fn run() {
 
     app.run(|_, event| {
         if let RunEvent::Exit = event {
-            // Don't leave a movie playing after the app quits.
+            // Don't leave a movie playing, or a transfer (and its
+            // keep-awake) running, after the app quits.
             mpv::kill_player();
+            share::kill_all();
         }
     });
 }

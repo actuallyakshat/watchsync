@@ -143,7 +143,7 @@ impl Drop for Mpv {
 
 /// Find a program in Homebrew's folders or on PATH.
 /// Finder-launched apps don't get the shell's PATH, so check Homebrew first.
-fn find_program(name: &str) -> Option<PathBuf> {
+pub fn find_program(name: &str) -> Option<PathBuf> {
     for dir in ["/opt/homebrew/bin", "/usr/local/bin"] {
         let p = Path::new(dir).join(name);
         if p.exists() {
@@ -168,18 +168,23 @@ pub fn find_brew() -> Option<PathBuf> {
 
 /// Run `brew install mpv` (blocking; takes a minute or two).
 pub fn install_with_brew() -> Result<()> {
+    brew_install("mpv")
+}
+
+/// `brew install <formula>` (blocking).
+pub fn brew_install(formula: &str) -> Result<()> {
     let brew = find_brew().ok_or_else(|| anyhow!("Homebrew is not installed"))?;
     let out = std::process::Command::new(brew)
-        .args(["install", "mpv"])
+        .args(["install", formula])
         .env("HOMEBREW_NO_AUTO_UPDATE", "1")
         .output()
         .context("couldn't run brew")?;
-    if out.status.success() && is_installed() {
+    if out.status.success() && find_program(formula).is_some() {
         Ok(())
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
         let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("unknown error");
-        bail!("brew install mpv failed: {last}")
+        bail!("brew install {formula} failed: {last}")
     }
 }
 

@@ -3,7 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { open, ask } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { EMPTY, onSnapshot, playerSetup, send, type Comfort, type PlayerSetup, type Snapshot } from "./api";
+import { EMPTY, installCroc, onSnapshot, playerSetup, send, type Comfort, type PlayerSetup, type Snapshot } from "./api";
 import { Sidebar } from "./components/Sidebar";
 import { Home } from "./components/Home";
 import { Room } from "./components/Room";
@@ -199,6 +199,18 @@ export function App() {
               onCrop={(crop) => void send({ type: "set_crop", crop })}
               onTrack={(kind, id) => void send({ type: "set_track", kind, id })}
               onComfort={setComfort}
+              files={{
+                crocInstalled: setup?.croc ?? false,
+                hasBrew: setup?.has_brew ?? false,
+                onInstallCroc: async () => {
+                  await installCroc();
+                  setSetup(await playerSetup());
+                },
+                onShare: () => void send({ type: "share_file" }),
+                onStopSharing: () => void send({ type: "stop_sharing" }),
+                onGet: (offer_id) => void send({ type: "get_file", offer_id }),
+                onCancel: (id) => void send({ type: "cancel_transfer", id }),
+              }}
             />
           ) : (
             <Home

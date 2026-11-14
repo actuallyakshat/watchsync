@@ -39,6 +39,12 @@ security warning. Update with `brew upgrade --cask watchsync`.
 - **Just for you**: your own audio track and subtitles, volume levelling and
   dialogue boost.
 - **File check**: shows whether everyone's copy matches the host's.
+- **Send the movie**: *Share my copy*, and friends without it click *Get
+  Riya's copy*. Sent with [croc](https://github.com/schollz/croc), one
+  private code per download, checked on arrival, saved to
+  `~/Movies/WatchSync` and opened. Both Macs stay awake while the transfer
+  runs (`caffeinate`, tied to croc; on battery only idle sleep is
+  prevented, and closing a laptop's lid still sleeps it).
 - **In-app updates**: a signed update feed; Settings → Check for updates.
 
 ## Build a release
@@ -69,8 +75,8 @@ cargo test                 # engine: sync math, real mpv, real network, e2e
 cd desktop && npm test     # UI
 ```
 
-The Rust tests need `mpv` and `ffmpeg` (`brew install ffmpeg`) and internet
-(iroh relay). The end-to-end test runs a three-person watch party with
+The Rust tests need `mpv`, `croc` and `ffmpeg` (`brew install ffmpeg`) and
+internet (iroh and croc relays). The end-to-end test runs a three-person watch party with
 headless players: play, pause from a guest's movie window, seeks both ways,
 drift recovery, a shared 2.39:1 crop and a late joiner.
 
@@ -96,6 +102,7 @@ drift recovery, a shared 2.39:1 crop and a late joiner.
 | `src/mpv.rs` | Launches mpv and talks to its JSON IPC socket |
 | `src/net.rs` | iroh transport, wire messages, invite codes, version check |
 | `src/fingerprint.rs` | Quick file identity check |
+| `src/share.rs` | Sending movies with croc, keeping the Mac awake |
 | `desktop/src-tauri` | The macOS app: bridges the engine to the window |
 | `desktop/src` | The UI (React), styled with Tars's design tokens |
 | `docs/join` | The invite-link page (GitHub Pages) that opens the app |

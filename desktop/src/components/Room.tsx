@@ -3,6 +3,7 @@ import type { Comfort, Crop, Snapshot, TrackKind } from "../api";
 import { formatTime, frameSize, movieTitle } from "../format";
 import { PauseIcon, PlayIcon, Skip10 } from "./Icons";
 import { Sound } from "./Sound";
+import { Files } from "./Files";
 
 /** Tallest to widest. Must match `Crop::ALL` in src/sync.rs. */
 export const CROPS: { id: Crop; label: string; aspect: number | null; imax?: boolean }[] = [
@@ -28,9 +29,10 @@ interface Props {
   onCrop: (crop: Crop) => void;
   onTrack: (kind: TrackKind, id: number | null) => void;
   onComfort: (c: Comfort) => void;
+  files: Omit<React.ComponentProps<typeof Files>, "snap">;
 }
 
-export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop, onTrack, onComfort }: Props) {
+export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop, onTrack, onComfort, files }: Props) {
   const host = snap.peers.find((p) => p.is_host);
 
   return (
@@ -42,6 +44,8 @@ export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop, onT
       )}
 
       <Player snap={snap} onToggle={onToggle} onSeekBy={onSeekBy} onSeekTo={onSeekTo} />
+
+      <Files snap={snap} {...files} />
 
       <section className="section" aria-labelledby="picture-head">
         <div className="section-head">

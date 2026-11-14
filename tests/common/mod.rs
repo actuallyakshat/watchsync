@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use watchsync::engine::{self, Snapshot, Timing, UiCmd};
+use watchsync::engine::{self, Options, Snapshot, Timing, UiCmd};
 
 pub const CLIP_SECS: f64 = 300.0;
 
@@ -102,15 +102,21 @@ impl Peer {
         Self::start_with(name, Timing::default())
     }
 
+
     /// Same, with custom connection timings (tests use short ones).
     pub fn start_with(name: &str, timing: Timing) -> Self {
+        Self::start_opts(name, Options { timing, downloads: test_downloads(name), ..Options::default() })
+    }
+
+    /// Same, with all options.
+    pub fn start_opts(name: &str, options: Options) -> Self {
         let (snap_tx, snaps) = async_channel::bounded(1);
         let (cmd, cmd_rx) = async_channel::unbounded();
         let name = name.to_string();
         std::thread::spawn(move || {
             tokio::runtime::Runtime::new()
                 .unwrap()
-                .block_on(engine::run_with(name, snap_tx, cmd_rx, timing));
+                .block_on(engine::run_with(name, snap_tx, cmd_rx, options));
         });
         Self {
             cmd,
@@ -210,4 +216,51 @@ pub fn rich_clip() -> PathBuf {
         path
     })
     .clone()
+}
+
+/// A fresh download folder per test person, never the real ~/Movies/WatchSync.
+pub fn test_downloads(name: &str) -> PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("downloads")
+        .join(format!("{}-{name}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+/// A ~300 MB real video, big enough that a transfer takes a few seconds.
+pub fn big_clip() -> PathBuf {
+    static CLIP: OnceLock<PathBuf> = OnceLock::new();
+    CLIP.get_or_init(|| {
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("big.mkv");
+        if !path.exists() {
+            let tmp = path.with_extension("tmp.mkv");
+            let status = Command::new("ffmpeg")
+                .args(["-hide_banner", "-loglevel", "error", "-y"])
+                .args(["-f", "lavfi", "-i", "testsrc2=duration=60:size=1920x1080:rate=24"])
+                .args(["-c:v", "libx264", "-preset", "ultrafast", "-b:v", "40M", "-maxrate", "40M", "-bufsize", "80M"])
+                .arg(&tmp)
+                .status()
+                .expect("ffmpeg is needed for tests: brew install ffmpeg");
+            assert!(status.success(), "ffmpeg failed");
+            std::fs::rename(&tmp, &path).unwrap();
+        }
+        path
+    })
+    .clone()
+}
+
+/// Running `program` processes whose arguments contain `args`. Matches the
+/// program's own file name (not `comm`, which ps cuts to 16 characters), so
+/// shells that merely mention it don't count.
+pub fn count_procs(program: &str, args: &str) -> usize {
+    let out = Command::new("ps").args(["-axo", "args="]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| {
+            let exe = l.split_whitespace().next().unwrap_or("");
+            Path::new(exe).file_name().and_then(|n| n.to_str()) == Some(program) && l.contains(args)
+        })
+        .count()
 }

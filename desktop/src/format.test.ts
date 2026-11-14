@@ -1,4 +1,4 @@
-import { formatDrift, formatTime, frameSize, movieTitle } from "./format";
+import { formatDrift, formatSize, formatTime, frameSize, movieTitle } from "./format";
 
 test("cleans up release file names", () => {
   expect(movieTitle("The Odyssey 2026 1080p BluRay HEVC x265 5.1 BONE.mkv")).toEqual({
@@ -33,4 +33,10 @@ test("crop previews are distinct shapes", () => {
   expect(heights).toEqual([...heights].sort((a, b) => b - a));
   expect(frameSize(1.43)).toEqual({ w: 23, h: 16 });
   expect(frameSize(null)).toEqual({ w: 28, h: 16 });
+});
+
+test("formats file sizes", () => {
+  expect(formatSize(4470387000)).toBe("4.2 GB");
+  expect(formatSize(314572800)).toBe("300 MB");
+  expect(formatSize(512)).toBe("512 bytes");
 });

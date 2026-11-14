@@ -4,7 +4,8 @@
 
 use crate::fingerprint::fingerprint;
 use crate::mpv::{Comfort, Mpv, MpvEvent, Track, TrackKind};
-use crate::net::{self, HostLink, Intent, Msg, NetEvent, PeerInfo, Reaction};
+use crate::net::{self, HostLink, Intent, Msg, NetEvent, Offer, PeerInfo, Reaction};
+use crate::share::{self, Croc, CrocEvent, Progress};
 use crate::sync::{
     ClockSync, Correction, Crop, PLAY_LEAD_MS, PlaybackState, correction, crop_geometry,
     format_time, now_ms,
@@ -34,6 +35,12 @@ pub enum UiCmd {
     SetTrack { kind: TrackKind, id: Option<i64> },
     /// This person's volume levelling / dialogue boost.
     SetComfort { comfort: Comfort },
+    /// Offer the open movie to the room (sent with croc on request).
+    ShareFile,
+    StopSharing,
+    /// Download someone's offered copy.
+    GetFile { offer_id: String },
+    CancelTransfer { id: u64 },
     React { reaction: Reaction },
     Leave,
     /// Test only: drop the connection to the host as if the network blinked.
@@ -42,6 +49,76 @@ pub enum UiCmd {
     /// Test only: vanish without telling anyone, as if the Mac went to sleep.
     #[doc(hidden)]
     TestCrash,
+}
+
+/// Where downloads go and how long to wait for transfers to start.
+#[derive(Clone, Debug)]
+pub struct Options {
+    pub timing: Timing,
+    pub downloads: PathBuf,
+    /// A send nobody connects to is stopped after this.
+    pub send_start_timeout: Duration,
+    /// Give up on a download if the sender's app doesn't answer.
+    pub request_timeout: Duration,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            timing: Timing::default(),
+            downloads: share::default_downloads(),
+            send_start_timeout: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+/// At most this many sends at once, so requests can't pile up.
+const MAX_SENDS: usize = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    Send,
+    Receive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferState {
+    /// Waiting for the other side (code, or croc connecting).
+    Waiting,
+    Running,
+    /// Received file is being checked.
+    Checking,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TransferView {
+    pub id: u64,
+    pub direction: Direction,
+    /// Who it's from / to.
+    pub peer: String,
+    pub file: String,
+    pub size: u64,
+    pub progress: Progress,
+    pub state: TransferState,
+    pub message: Option<String>,
+    /// Where a received file was saved.
+    pub path: Option<PathBuf>,
+}
+
+struct Transfer {
+    view: TransferView,
+    offer_id: String,
+    /// Receiver: the offer, to verify what arrives. Sender: requester's id.
+    offer: Option<Offer>,
+    requester_id: String,
+    croc: Option<Croc>,
+    created: Instant,
 }
 
 /// How quickly connection problems are noticed and handled.
@@ -156,6 +233,11 @@ pub struct Snapshot {
     pub comfort: Comfort,
     /// The link to share (only the host has a working one).
     pub invite_link: Option<String>,
+    /// Copies others in the room offer to send.
+    pub offers: Vec<Offer>,
+    /// This person offers their open movie.
+    pub sharing: bool,
+    pub transfers: Vec<TransferView>,
 }
 
 enum Role {
@@ -193,6 +275,7 @@ struct Peer {
     id: String,
     code: String,
     last_seen: Instant,
+    offer: Option<Offer>,
 }
 
 /// Longest display name, in characters.
@@ -205,6 +288,16 @@ const OWN_PAUSE_GRACE: Duration = Duration::from_millis(400);
 
 struct Engine {
     timing: Timing,
+    options: Options,
+    share_tx: mpsc::UnboundedSender<(u64, CrocEvent)>,
+    /// This person's offer and the file behind it.
+    my_offer: Option<(Offer, PathBuf)>,
+    /// Every offer in the room (from the host).
+    offers: Vec<Offer>,
+    transfers: Vec<Transfer>,
+    next_transfer: u64,
+    /// The open movie's path.
+    file_path: Option<PathBuf>,
     name: String,
     ui: async_channel::Sender<Snapshot>,
     net_tx: mpsc::UnboundedSender<NetEvent>,
@@ -260,20 +353,29 @@ pub async fn run(
     ui: async_channel::Sender<Snapshot>,
     cmds: async_channel::Receiver<UiCmd>,
 ) {
-    run_with(name, ui, cmds, Timing::default()).await
+    run_with(name, ui, cmds, Options::default()).await
 }
 
 pub async fn run_with(
     name: String,
     ui: async_channel::Sender<Snapshot>,
     cmds: async_channel::Receiver<UiCmd>,
-    timing: Timing,
+    options: Options,
 ) {
+    let timing = options.timing;
+    let (share_tx, mut share_rx) = mpsc::unbounded_channel();
     let (net_tx, mut net_rx) = mpsc::unbounded_channel();
     let (mpv_tx, mut mpv_rx) = mpsc::unbounded_channel();
     let now = Instant::now();
     let mut e = Engine {
         timing,
+        options,
+        share_tx,
+        my_offer: None,
+        offers: Vec::new(),
+        transfers: Vec::new(),
+        next_transfer: 1,
+        file_path: None,
         name,
         ui,
         net_tx,
@@ -326,6 +428,7 @@ pub async fn run_with(
             },
             Some(ev) = net_rx.recv() => e.on_net(ev).await,
             Some((generation, ev)) = mpv_rx.recv() => e.on_mpv(generation, ev).await,
+            Some((id, ev)) = share_rx.recv() => e.on_croc(id, ev).await,
             _ = tick.tick() => e.on_tick().await,
         }
         e.publish();
@@ -441,6 +544,17 @@ impl Engine {
                     && mpv.set_track(kind, id).await.is_ok()
                 {
                     self.tracks = mpv.tracks().await.unwrap_or_default();
+                }
+            }
+            UiCmd::ShareFile => self.share_file(),
+            UiCmd::StopSharing => self.stop_sharing(),
+            UiCmd::GetFile { offer_id } => self.get_file(offer_id),
+            UiCmd::CancelTransfer { id } => {
+                if let Some(t) = self.transfers.iter_mut().find(|t| t.view.id == id)
+                    && matches!(t.view.state, TransferState::Waiting | TransferState::Running)
+                {
+                    t.croc = None; // stops croc (and its caffeinate)
+                    t.view.state = TransferState::Cancelled;
                 }
             }
             UiCmd::SetComfort { comfort } => {
@@ -585,6 +699,13 @@ impl Engine {
         self.crop = Crop::Original;
         self.crop_by = None;
         self.chat.clear();
+        self.my_offer = None;
+        self.offers.clear();
+        for t in &mut self.transfers {
+            if t.croc.take().is_some() {
+                t.view.state = TransferState::Cancelled;
+            }
+        }
         self.mpv = None;
         self.mpv_gen += 1;
         self.applied_crop = None;
@@ -634,6 +755,10 @@ impl Engine {
             .ok()
             .and_then(Result::ok);
         self.file_name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+        if self.my_offer.is_some() {
+            self.stop_sharing(); // the offer was for the previous file
+        }
+        self.file_path = Some(path.clone());
 
         // Replace any previous player. Events are tagged with a generation so
         // the old player's "exited" event doesn't close the new one.
@@ -856,6 +981,7 @@ impl Engine {
         }
         self.apply_crop().await;
         self.apply_comfort().await;
+        self.expire_transfers();
         // The person may switch tracks in the movie window too (j, #).
         if let Some(mpv) = self.mpv.clone() {
             self.tracks = mpv.tracks().await.unwrap_or_default();
@@ -939,6 +1065,7 @@ impl Engine {
                             id: String::new(),
                             code: String::new(),
                             last_seen: Instant::now(),
+                            offer: None,
                         },
                     );
                 }
@@ -979,6 +1106,12 @@ impl Engine {
                         }
                     }
                     Msg::React { from, reaction } => self.heard(from, None, Some(reaction)).await,
+                    Msg::Offers(list) => self.offers = list,
+                    Msg::FileRequest { offer_id, from_id, from, .. } => {
+                        self.serve_request(offer_id, from_id, from)
+                    }
+                    Msg::FileCode { offer_id, code, .. } => self.start_download(offer_id, code),
+                    Msg::FileRefused { offer_id, reason, .. } => self.refused(&offer_id, reason),
                     _ => {}
                 }
             }
@@ -1160,6 +1293,307 @@ impl Engine {
         }
     }
 
+    // ---------------------------------------------------------------- files
+
+    fn my_id(&self) -> String {
+        self.endpoint.as_ref().map(net::id_of).unwrap_or_default()
+    }
+
+    /// Send a message to whoever it's addressed to (`to` = endpoint id):
+    /// the host delivers it; guests hand everything to the host.
+    fn route(&mut self, msg: Msg) {
+        let to = match &msg {
+            Msg::FileRequest { to, .. } | Msg::FileCode { to, .. } | Msg::FileRefused { to, .. } => to.clone(),
+            _ => return,
+        };
+        if to == self.my_id() {
+            match msg {
+                Msg::FileRequest { offer_id, from_id, from, .. } => self.serve_request(offer_id, from_id, from),
+                Msg::FileCode { offer_id, code, .. } => self.start_download(offer_id, code),
+                Msg::FileRefused { offer_id, reason, .. } => self.refused(&offer_id, reason),
+                _ => {}
+            }
+            return;
+        }
+        match &self.role {
+            Role::Host { peers } => {
+                if let Some(p) = peers.values().find(|p| p.id == to) {
+                    let _ = p.tx.send(msg);
+                }
+            }
+            _ => {
+                if let Some(tx) = self.host_tx() {
+                    let _ = tx.send(msg);
+                }
+            }
+        }
+    }
+
+    /// Offer the open movie to the room.
+    fn share_file(&mut self) {
+        let (Some(path), Some(fingerprint)) = (self.file_path.clone(), self.fingerprint.clone()) else {
+            self.error = Some("Choose your movie first, then share it.".into());
+            return;
+        };
+        let Ok(offer_id) = share::random_hex(8) else { return };
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let offer = Offer {
+            offer_id,
+            from_id: self.my_id(),
+            from: self.name.clone(),
+            name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            size,
+            fingerprint,
+        };
+        self.my_offer = Some((offer.clone(), path));
+        if self.is_host() {
+            self.refresh_peers();
+        } else if let Some(tx) = self.host_tx() {
+            let _ = tx.send(Msg::Offer(offer));
+        }
+    }
+
+    fn stop_sharing(&mut self) {
+        let Some((offer, _)) = self.my_offer.take() else { return };
+        // Sends nobody has connected to yet stop; ones in progress finish.
+        for t in &mut self.transfers {
+            if t.view.direction == Direction::Send && t.view.state == TransferState::Waiting {
+                t.croc = None;
+                t.view.state = TransferState::Cancelled;
+            }
+        }
+        if self.is_host() {
+            self.refresh_peers();
+        } else if let Some(tx) = self.host_tx() {
+            let _ = tx.send(Msg::OfferEnd { offer_id: offer.offer_id });
+        }
+    }
+
+    fn add_transfer(&mut self, direction: Direction, peer: String, offer: &Offer) -> u64 {
+        let id = self.next_transfer;
+        self.next_transfer += 1;
+        self.transfers.push(Transfer {
+            view: TransferView {
+                id,
+                direction,
+                peer,
+                file: offer.name.clone(),
+                size: offer.size,
+                progress: Progress::default(),
+                state: TransferState::Waiting,
+                message: None,
+                path: None,
+            },
+            offer_id: offer.offer_id.clone(),
+            offer: Some(offer.clone()),
+            requester_id: String::new(),
+            croc: None,
+            created: Instant::now(),
+        });
+        id
+    }
+
+    fn fail(&mut self, id: u64, message: impl Into<String>) {
+        if let Some(t) = self.transfers.iter_mut().find(|t| t.view.id == id) {
+            t.croc = None;
+            t.view.state = TransferState::Failed;
+            t.view.message = Some(message.into());
+        }
+    }
+
+    /// Ask the offerer to send their copy.
+    fn get_file(&mut self, offer_id: String) {
+        let Some(offer) = self.offers.iter().find(|o| o.offer_id == offer_id).cloned() else {
+            self.error = Some("That copy isn't on offer anymore.".into());
+            return;
+        };
+        if !share::is_installed() {
+            self.error = Some("Receiving movies needs croc. Install it with: brew install croc".into());
+            return;
+        }
+        let busy = self.transfers.iter().any(|t| {
+            t.offer_id == offer_id
+                && t.view.direction == Direction::Receive
+                && matches!(t.view.state, TransferState::Waiting | TransferState::Running | TransferState::Checking)
+        });
+        if busy {
+            return;
+        }
+        let dir = self.options.downloads.clone();
+        let _ = std::fs::create_dir_all(&dir);
+        if let Some(free) = share::free_space(&dir)
+            && free < offer.size + 200 * 1024 * 1024
+        {
+            self.error = Some(format!(
+                "Not enough space in {} for {}.",
+                dir.display(),
+                offer.name
+            ));
+            return;
+        }
+        self.add_transfer(Direction::Receive, offer.from.clone(), &offer);
+        self.route(Msg::FileRequest {
+            offer_id,
+            to: offer.from_id.clone(),
+            from_id: self.my_id(),
+            from: self.name.clone(),
+        });
+    }
+
+    /// Someone asked for our offered copy: start a croc session just for them.
+    fn serve_request(&mut self, offer_id: String, requester_id: String, requester: String) {
+        let refuse = |e: &mut Self, reason: &str| {
+            e.route(Msg::FileRefused {
+                offer_id: offer_id.clone(),
+                to: requester_id.clone(),
+                reason: reason.into(),
+            })
+        };
+        // Only ever the file we offered: requests name an offer, never a path.
+        let Some((offer, path)) = self.my_offer.clone().filter(|(o, _)| o.offer_id == offer_id) else {
+            return refuse(self, "isn't sharing that copy anymore");
+        };
+        if !share::is_installed() {
+            return refuse(self, "needs croc installed to send (brew install croc)");
+        }
+        let active = |t: &Transfer| matches!(t.view.state, TransferState::Waiting | TransferState::Running);
+        if self
+            .transfers
+            .iter()
+            .any(|t| t.view.direction == Direction::Send && t.requester_id == requester_id && active(t))
+        {
+            return; // already sending to them
+        }
+        if self.transfers.iter().filter(|t| t.view.direction == Direction::Send && active(t)).count() >= MAX_SENDS {
+            return refuse(self, "is already sending to a few people. Try again in a bit");
+        }
+        let Ok(code) = share::new_code() else { return };
+        let id = self.add_transfer(Direction::Send, requester.clone(), &offer);
+        match share::start(id, share::Job::Send { file: &path }, &code, self.share_tx.clone()) {
+            Ok(croc) => {
+                if let Some(t) = self.transfers.iter_mut().find(|t| t.view.id == id) {
+                    t.croc = Some(croc);
+                    t.requester_id = requester_id.clone();
+                }
+                self.route(Msg::FileCode {
+                    offer_id,
+                    to: requester_id,
+                    code,
+                });
+            }
+            Err(e) => {
+                self.fail(id, e.to_string());
+                refuse(self, "couldn't start sending");
+            }
+        }
+    }
+
+    /// The sender gave us a code: start receiving.
+    fn start_download(&mut self, offer_id: String, code: String) {
+        let Some(t) = self.transfers.iter_mut().find(|t| {
+            t.offer_id == offer_id
+                && t.view.direction == Direction::Receive
+                && t.view.state == TransferState::Waiting
+                && t.croc.is_none()
+        }) else {
+            return;
+        };
+        let id = t.view.id;
+        let into = self.options.downloads.clone();
+        match share::start(id, share::Job::Receive { into: &into }, &code, self.share_tx.clone()) {
+            Ok(croc) => {
+                if let Some(t) = self.transfers.iter_mut().find(|t| t.view.id == id) {
+                    t.croc = Some(croc);
+                }
+            }
+            Err(e) => self.fail(id, e.to_string()),
+        }
+    }
+
+    fn refused(&mut self, offer_id: &str, reason: String) {
+        let ids: Vec<(u64, String)> = self
+            .transfers
+            .iter()
+            .filter(|t| t.offer_id == offer_id && t.view.direction == Direction::Receive && t.view.state == TransferState::Waiting)
+            .map(|t| (t.view.id, t.view.peer.clone()))
+            .collect();
+        for (id, who) in ids {
+            self.fail(id, format!("{who} {reason}"));
+        }
+    }
+
+    /// Stop sends nobody connected to, and requests nobody answered.
+    fn expire_transfers(&mut self) {
+        let (send_limit, ask_limit) = (self.options.send_start_timeout, self.options.request_timeout);
+        for t in &mut self.transfers {
+            if t.view.state != TransferState::Waiting {
+                continue;
+            }
+            let age = t.created.elapsed();
+            let expired = match t.view.direction {
+                Direction::Send => age > send_limit,
+                Direction::Receive => age > if t.croc.is_some() { send_limit } else { ask_limit },
+            };
+            if expired {
+                t.view.state = TransferState::Failed;
+                t.view.message = Some(match t.view.direction {
+                    Direction::Send => format!("{} didn't connect", t.view.peer),
+                    Direction::Receive if t.croc.is_some() => format!("Couldn't connect to {}", t.view.peer),
+                    Direction::Receive => format!("{}'s app didn't answer", t.view.peer),
+                });
+                t.croc = None;
+            }
+        }
+    }
+
+    async fn on_croc(&mut self, id: u64, ev: CrocEvent) {
+        let Some(t) = self.transfers.iter_mut().find(|t| t.view.id == id) else { return };
+        if matches!(t.view.state, TransferState::Cancelled | TransferState::Failed | TransferState::Done) {
+            return;
+        }
+        match ev {
+            CrocEvent::Started => t.view.state = TransferState::Running,
+            CrocEvent::Progress(p) => {
+                t.view.state = TransferState::Running;
+                t.view.progress = p;
+            }
+            CrocEvent::Finished(Err(e)) => {
+                t.croc = None;
+                t.view.state = TransferState::Failed;
+                t.view.message = Some(e);
+            }
+            CrocEvent::Finished(Ok(())) => {
+                t.croc = None;
+                if t.view.direction == Direction::Send {
+                    t.view.state = TransferState::Done;
+                    return;
+                }
+                // Received: check it's exactly the offered copy before using it.
+                let offer = t.offer.clone();
+                t.view.state = TransferState::Checking;
+                let Some(offer) = offer else { return };
+                let Some(name) = share::safe_file_name(&offer.name) else {
+                    return self.fail(id, "the file name wasn't usable");
+                };
+                let path = self.options.downloads.join(name);
+                let p = path.clone();
+                let fp = tokio::task::spawn_blocking(move || fingerprint(&p)).await.ok().and_then(Result::ok);
+                if fp.as_deref() != Some(offer.fingerprint.as_str()) {
+                    return self.fail(id, "the file that arrived doesn't match the offered copy");
+                }
+                if let Some(t) = self.transfers.iter_mut().find(|t| t.view.id == id) {
+                    t.view.state = TransferState::Done;
+                    t.view.progress.percent = 100;
+                    t.view.path = Some(path.clone());
+                }
+                // Use it now, unless already watching a matching copy.
+                if self.fingerprint.as_deref() != Some(offer.fingerprint.as_str()) {
+                    self.open_file(path).await;
+                }
+            }
+        }
+    }
+
     async fn on_peer_msg(&mut self, id: u64, msg: Msg) {
         let Role::Host { peers } = &mut self.role else {
             return;
@@ -1224,6 +1658,27 @@ impl Engine {
                     self.heard(from, Some(text), None).await;
                 }
             }
+            Msg::Offer(mut offer) => {
+                // The host vouches for who offers it.
+                offer.from_id = peer.id.clone();
+                offer.from = peer.name.clone();
+                if !offer.from_id.is_empty() {
+                    peer.offer = Some(offer);
+                    self.refresh_peers();
+                }
+            }
+            Msg::OfferEnd { .. } => {
+                peer.offer = None;
+                self.refresh_peers();
+            }
+            Msg::FileRequest { offer_id, to, .. } => {
+                let (from_id, from) = (peer.id.clone(), peer.name.clone());
+                if from_id.is_empty() {
+                    return;
+                }
+                self.route(Msg::FileRequest { offer_id, to, from_id, from });
+            }
+            msg @ (Msg::FileCode { .. } | Msg::FileRefused { .. }) => self.route(msg),
             Msg::React { reaction, .. } => {
                 let from = peer.name.clone();
                 self.relay(Msg::React { from: from.clone(), reaction }, Some(id));
@@ -1274,6 +1729,12 @@ impl Engine {
         }));
         self.room_peers = list.clone();
         self.broadcast(Msg::Peers(list));
+        let mut offers: Vec<Offer> = self.my_offer.iter().map(|(o, _)| o.clone()).collect();
+        if let Role::Host { peers } = &self.role {
+            offers.extend(peers.values().filter_map(|p| p.offer.clone()));
+        }
+        self.offers = offers.clone();
+        self.broadcast(Msg::Offers(offers));
     }
 
     async fn osd(&self, text: &str) {
@@ -1332,6 +1793,12 @@ impl Engine {
             tracks: self.tracks.clone(),
             comfort: self.comfort,
             invite_link: self.code.as_deref().filter(|_| self.is_host()).map(net::invite_link),
+            offers: {
+                let me = self.my_id();
+                self.offers.iter().filter(|o| o.from_id != me).cloned().collect()
+            },
+            sharing: self.my_offer.is_some(),
+            transfers: self.transfers.iter().map(|t| t.view.clone()).collect(),
         };
         // Bounded(1) channel: replace any snapshot the UI hasn't drawn yet.
         let _ = self.ui.force_send(snapshot);

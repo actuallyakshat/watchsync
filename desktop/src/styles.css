@@ -1123,3 +1123,101 @@ ul {
 .toggle.on .switch i {
   transform: translateX(12px);
 }
+
+/* ---------- movie file (croc) ---------- */
+
+.file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.file-row + .file-row {
+  margin-top: 8px;
+}
+
+.file-row p {
+  color: var(--ink-2);
+  max-width: 44ch;
+}
+
+.file-row button {
+  flex: none;
+}
+
+.croc-setup {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--ask-line);
+  border-radius: 10px;
+  background: var(--ask-bg);
+}
+
+.croc-setup p {
+  color: var(--ink-2);
+}
+
+.croc-setup .primary {
+  margin-top: 10px;
+}
+
+.transfers {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.transfer {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.transfer-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.transfer-what {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar {
+  height: 4px;
+  margin-top: 9px;
+  border-radius: 2px;
+  background: var(--well);
+  overflow: hidden;
+}
+
+.bar i {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+  transition: width 300ms var(--ease);
+}
+
+.transfer.done .bar i {
+  background: var(--s-done);
+}
+
+.transfer-detail {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.transfer-detail.bad {
+  color: var(--s-blocked);
+}

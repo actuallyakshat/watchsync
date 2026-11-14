@@ -18,6 +18,18 @@ pub enum Intent {
     SetCrop { crop: Crop },
 }
 
+/// A movie file someone offers to send with croc.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Offer {
+    pub offer_id: String,
+    /// Endpoint id and name of who offers it (filled in by the host).
+    pub from_id: String,
+    pub from: String,
+    pub name: String,
+    pub size: u64,
+    pub fingerprint: String,
+}
+
 /// Quick reactions. Shown as words on the movie (its text renderer has no
 /// colour emoji) and as emoji in the app.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +118,32 @@ pub enum Msg {
     Chat { from: String, text: String },
     /// A quick reaction, relayed the same way.
     React { from: String, reaction: Reaction },
+    /// guest → host: "I can send my copy" (host fills in who).
+    Offer(Offer),
+    /// guest → host: stopped offering.
+    OfferEnd { offer_id: String },
+    /// host → all: every copy on offer in the room.
+    Offers(Vec<Offer>),
+    /// "Please send me offer `offer_id`", for the peer with endpoint id `to`.
+    /// The host fills in who's asking (`from_id`, `from`).
+    FileRequest {
+        offer_id: String,
+        to: String,
+        from_id: String,
+        from: String,
+    },
+    /// The croc code for one download, for the requester (`to`) only.
+    FileCode {
+        offer_id: String,
+        to: String,
+        code: String,
+    },
+    /// The sender can't serve this request right now.
+    FileRefused {
+        offer_id: String,
+        to: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug)]

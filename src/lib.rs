@@ -4,4 +4,5 @@ pub mod engine;
 pub mod fingerprint;
 pub mod mpv;
 pub mod net;
+pub mod share;
 pub mod sync;

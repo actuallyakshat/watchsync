@@ -44,6 +44,27 @@ export interface Comfort {
   boost_dialogue: boolean;
 }
 
+export interface Offer {
+  offer_id: string;
+  from_id: string;
+  from: string;
+  name: string;
+  size: number;
+  fingerprint: string;
+}
+
+export interface Transfer {
+  id: number;
+  direction: "send" | "receive";
+  peer: string;
+  file: string;
+  size: number;
+  progress: { percent: number; amount: string | null; speed: string | null; eta: string | null };
+  state: "waiting" | "running" | "checking" | "done" | "failed" | "cancelled";
+  message: string | null;
+  path: string | null;
+}
+
 export interface Person {
   name: string;
   is_host: boolean;
@@ -78,6 +99,9 @@ export interface Snapshot {
   tracks: Track[];
   comfort: Comfort;
   invite_link: string | null;
+  offers: Offer[];
+  sharing: boolean;
+  transfers: Transfer[];
 }
 
 export type Command =
@@ -93,16 +117,23 @@ export type Command =
   | { type: "react"; reaction: Reaction }
   | { type: "set_track"; kind: TrackKind; id: number | null }
   | { type: "set_comfort"; comfort: Comfort }
+  | { type: "share_file" }
+  | { type: "stop_sharing" }
+  | { type: "get_file"; offer_id: string }
+  | { type: "cancel_transfer"; id: number }
   | { type: "leave" };
 
 export interface PlayerSetup {
   installed: boolean;
   has_brew: boolean;
+  /** croc, for sending movies. */
+  croc: boolean;
 }
 
 export const send = (cmd: Command) => invoke<void>("send", { cmd });
 export const playerSetup = () => invoke<PlayerSetup>("player_setup");
 export const installPlayer = () => invoke<void>("install_player");
+export const installCroc = () => invoke<void>("install_croc");
 export const onSnapshot = (f: (s: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>("snapshot", (e) => f(e.payload));
 
@@ -131,4 +162,7 @@ export const EMPTY: Snapshot = {
   tracks: [],
   comfort: { level_volume: false, boost_dialogue: false },
   invite_link: null,
+  offers: [],
+  sharing: false,
+  transfers: [],
 };
