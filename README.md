@@ -27,7 +27,8 @@ security warning. Update with `brew upgrade --cask watchsync`.
   arrow keys, seek bar).
 - **Stays in sync**: players drift-correct by nudging speed ±5% (inaudible),
   and jump only when more than 1.5 s off.
-- **Same picture for everyone**: pick a crop (16:9, 1.85:1, 2.39:1, 4:3) and
+- **Same picture for everyone**: pick a crop (4:3, IMAX 1.43:1, 1.66:1, 16:9,
+  1.85:1, IMAX 1.90:1, 2.00:1, 2.20:1, 2.39:1, 2.76:1) and
   every player shows exactly the same part of the frame.
 - **File check**: shows whether everyone's copy matches the host's.
 - **In-app updates**: a signed update feed; click *Update* in the sidebar.

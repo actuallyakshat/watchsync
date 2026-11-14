@@ -150,32 +150,79 @@ impl ClockSync {
 pub enum Crop {
     #[default]
     Original,
-    Wide,
-    Flat,
-    Scope,
+    /// 4:3
     Classic,
+    /// IMAX 1.43:1 (70mm film, full height)
+    #[serde(rename = "imax_143")]
+    Imax143,
+    /// 1.66:1 European widescreen
+    #[serde(rename = "euro_166")]
+    Euro166,
+    /// 16:9
+    Wide,
+    /// 1.85:1 flat
+    Flat,
+    /// IMAX 1.90:1 (digital IMAX, "IMAX Enhanced")
+    #[serde(rename = "imax_190")]
+    Imax190,
+    /// 2.00:1 (Univisium, streaming series)
+    #[serde(rename = "univisium_200")]
+    Univisium200,
+    /// 2.20:1 (70mm)
+    #[serde(rename = "todd_ao_220")]
+    ToddAo220,
+    /// 2.39:1 scope
+    Scope,
+    /// 2.76:1 Ultra Panavision 70
+    #[serde(rename = "ultra_276")]
+    Ultra276,
 }
 
 impl Crop {
-    pub const ALL: [Crop; 5] = [Crop::Original, Crop::Wide, Crop::Flat, Crop::Scope, Crop::Classic];
+    /// Tallest to widest.
+    pub const ALL: [Crop; 11] = [
+        Crop::Original,
+        Crop::Classic,
+        Crop::Imax143,
+        Crop::Euro166,
+        Crop::Wide,
+        Crop::Flat,
+        Crop::Imax190,
+        Crop::Univisium200,
+        Crop::ToddAo220,
+        Crop::Scope,
+        Crop::Ultra276,
+    ];
 
     pub fn aspect(self) -> Option<f64> {
-        match self {
-            Crop::Original => None,
-            Crop::Wide => Some(16.0 / 9.0),
-            Crop::Flat => Some(1.85),
-            Crop::Scope => Some(2.39),
-            Crop::Classic => Some(4.0 / 3.0),
-        }
+        Some(match self {
+            Crop::Original => return None,
+            Crop::Classic => 4.0 / 3.0,
+            Crop::Imax143 => 1.43,
+            Crop::Euro166 => 1.66,
+            Crop::Wide => 16.0 / 9.0,
+            Crop::Flat => 1.85,
+            Crop::Imax190 => 1.90,
+            Crop::Univisium200 => 2.0,
+            Crop::ToddAo220 => 2.20,
+            Crop::Scope => 2.39,
+            Crop::Ultra276 => 2.76,
+        })
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Crop::Original => "Original",
+            Crop::Classic => "4:3",
+            Crop::Imax143 => "IMAX 1.43:1",
+            Crop::Euro166 => "1.66:1",
             Crop::Wide => "16:9",
             Crop::Flat => "1.85:1",
+            Crop::Imax190 => "IMAX 1.90:1",
+            Crop::Univisium200 => "2.00:1",
+            Crop::ToddAo220 => "2.20:1",
             Crop::Scope => "2.39:1",
-            Crop::Classic => "4:3",
+            Crop::Ultra276 => "2.76:1",
         }
     }
 }
@@ -303,6 +350,32 @@ mod tests {
     #[test]
     fn crop_serialises_as_snake_case() {
         assert_eq!(serde_json::to_string(&Crop::Scope).unwrap(), "\"scope\"");
+        assert_eq!(serde_json::to_string(&Crop::Imax143).unwrap(), "\"imax_143\"");
+        // The UI's list must match: every preset round-trips.
+        for c in Crop::ALL {
+            let json = serde_json::to_string(&c).unwrap();
+            assert_eq!(serde_json::from_str::<Crop>(&json).unwrap(), c);
+        }
+    }
+
+    #[test]
+    fn imax_and_cinema_crops_from_a_16x9_frame() {
+        // IMAX 1.43:1 is taller than 16:9, so it trims the sides.
+        assert_eq!(crop_geometry(1920, 1080, 1920, 1080, Crop::Imax143), "1544x1080+188+0");
+        assert_eq!(crop_geometry(1920, 1080, 1920, 1080, Crop::Euro166), "1792x1080+64+0");
+        // The rest are wider, so they trim top and bottom.
+        assert_eq!(crop_geometry(1920, 1080, 1920, 1080, Crop::Imax190), "1920x1010+0+35");
+        assert_eq!(crop_geometry(1920, 1080, 1920, 1080, Crop::Univisium200), "1920x960+0+60");
+        assert_eq!(crop_geometry(1920, 1080, 1920, 1080, Crop::ToddAo220), "1920x872+0+104");
+        assert_eq!(crop_geometry(1920, 1080, 1920, 1080, Crop::Ultra276), "1920x696+0+192");
+        // An IMAX 1.90 release cropped to 1.90 is already that shape.
+        assert_eq!(crop_geometry(1920, 1010, 1920, 1010, Crop::Imax190), "");
+    }
+
+    #[test]
+    fn presets_run_tallest_to_widest() {
+        let aspects: Vec<f64> = Crop::ALL.iter().filter_map(|c| c.aspect()).collect();
+        assert!(aspects.windows(2).all(|w| w[0] < w[1]), "{aspects:?}");
     }
 
     #[test]

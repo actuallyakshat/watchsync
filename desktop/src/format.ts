@@ -49,8 +49,13 @@ export function movieTitle(fileName: string): { title: string; year: string | nu
   return { title: title || name, year };
 }
 
-/** Width/height of the little frame drawn on a crop chip. */
+/**
+ * Width/height (px) of the shape drawn on a crop chip, inside a 30x18 box,
+ * so 16:9, 1.85:1 and 2.39:1 read as visibly different shapes.
+ */
 export function frameSize(aspect: number | null): { w: number; h: number } {
-  const a = aspect ?? 16 / 9;
-  return a >= 16 / 9 ? { w: 18, h: Math.round(18 / a) } : { w: Math.round(10 * a), h: 10 };
+  const W = 28;
+  const H = 16;
+  if (aspect === null) return { w: W, h: H };
+  return aspect >= W / H ? { w: W, h: Math.round(W / aspect) } : { w: Math.round(H * aspect), h: H };
 }

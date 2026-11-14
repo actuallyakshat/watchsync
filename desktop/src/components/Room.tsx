@@ -3,12 +3,19 @@ import type { Crop, Snapshot } from "../api";
 import { formatTime, frameSize, movieTitle } from "../format";
 import { PauseIcon, PlayIcon, Skip10 } from "./Icons";
 
-export const CROPS: { id: Crop; label: string; aspect: number | null }[] = [
+/** Tallest to widest. Must match `Crop::ALL` in src/sync.rs. */
+export const CROPS: { id: Crop; label: string; aspect: number | null; imax?: boolean }[] = [
   { id: "original", label: "Original", aspect: null },
+  { id: "classic", label: "4:3", aspect: 4 / 3 },
+  { id: "imax_143", label: "1.43:1", aspect: 1.43, imax: true },
+  { id: "euro_166", label: "1.66:1", aspect: 1.66 },
   { id: "wide", label: "16:9", aspect: 16 / 9 },
   { id: "flat", label: "1.85:1", aspect: 1.85 },
+  { id: "imax_190", label: "1.90:1", aspect: 1.9, imax: true },
+  { id: "univisium_200", label: "2.00:1", aspect: 2 },
+  { id: "todd_ao_220", label: "2.20:1", aspect: 2.2 },
   { id: "scope", label: "2.39:1", aspect: 2.39 },
-  { id: "classic", label: "4:3", aspect: 4 / 3 },
+  { id: "ultra_276", label: "2.76:1", aspect: 2.76 },
 ];
 
 interface Props {
@@ -46,12 +53,15 @@ export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop }: P
                 key={c.id}
                 role="radio"
                 aria-checked={snap.crop === c.id}
+                aria-label={c.imax ? `IMAX ${c.label}` : c.label}
                 className={`chip ${snap.crop === c.id ? "on" : ""}`}
+                title={c.aspect === null ? "The movie as it is in the file" : `Crop to ${c.imax ? "IMAX " : ""}${c.label}`}
                 onClick={() => onCrop(c.id)}
               >
-                <span className="frame">
+                <span className={`frame ${c.aspect === null ? "full" : ""}`}>
                   <i style={{ width: f.w, height: f.h }} />
                 </span>
+                {c.imax && <span className="imax">IMAX</span>}
                 {c.label}
               </button>
             );

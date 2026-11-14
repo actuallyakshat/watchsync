@@ -11,6 +11,7 @@ export type UpdateState =
   | { kind: "failed"; message: string };
 
 const SIX_HOURS = 6 * 60 * 60 * 1000;
+const TEN_MINUTES = 10 * 60 * 1000;
 
 export function useUpdater() {
   const [state, setState] = useState<UpdateState>({ kind: "none" });
@@ -30,9 +31,19 @@ export function useUpdater() {
     };
     void look();
     const timer = setInterval(look, SIX_HOURS);
+    // Also look whenever the window comes back to the front (at most every
+    // 10 minutes), so a new release shows up without restarting the app.
+    let last = Date.now();
+    const onFocus = () => {
+      if (Date.now() - last < TEN_MINUTES) return;
+      last = Date.now();
+      void look();
+    };
+    window.addEventListener("focus", onFocus);
     return () => {
       alive = false;
       clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
     };
   }, []);
 

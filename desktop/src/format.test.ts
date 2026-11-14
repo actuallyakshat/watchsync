@@ -1,4 +1,4 @@
-import { formatDrift, formatTime, movieTitle } from "./format";
+import { formatDrift, formatTime, frameSize, movieTitle } from "./format";
 
 test("cleans up release file names", () => {
   expect(movieTitle("The Odyssey 2026 1080p BluRay HEVC x265 5.1 BONE.mkv")).toEqual({
@@ -25,4 +25,12 @@ test("formats times and drift", () => {
   expect(formatDrift(12)).toBe("in sync");
   expect(formatDrift(-180)).toBe("−180 ms");
   expect(formatDrift(2300)).toBe("+2.3 s");
+});
+
+test("crop previews are distinct shapes", () => {
+  const heights = [16 / 9, 1.85, 1.9, 2, 2.2, 2.39, 2.76].map((a) => frameSize(a).h);
+  expect(new Set(heights).size).toBeGreaterThanOrEqual(6);
+  expect(heights).toEqual([...heights].sort((a, b) => b - a));
+  expect(frameSize(1.43)).toEqual({ w: 23, h: 16 });
+  expect(frameSize(null)).toEqual({ w: 28, h: 16 });
 });

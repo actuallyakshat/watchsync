@@ -5,7 +5,18 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type Phase = "home" | "connecting" | "room";
 export type FileStatus = "no_file" | "match" | "mismatch" | "unknown";
-export type Crop = "original" | "wide" | "flat" | "scope" | "classic";
+export type Crop =
+  | "original"
+  | "classic"
+  | "imax_143"
+  | "euro_166"
+  | "wide"
+  | "flat"
+  | "imax_190"
+  | "univisium_200"
+  | "todd_ao_220"
+  | "scope"
+  | "ultra_276";
 
 export interface Person {
   name: string;

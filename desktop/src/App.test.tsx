@@ -86,6 +86,9 @@ test("room: readable title, people with file status, shared crop", async () => {
 
   await userEvent.click(screen.getByRole("radio", { name: /2\.39:1/ }));
   expect(sent).toContainEqual({ type: "set_crop", crop: "scope" });
+  expect(screen.getAllByRole("radio")).toHaveLength(11);
+  await userEvent.click(screen.getByRole("radio", { name: "IMAX 1.43:1" }));
+  expect(sent).toContainEqual({ type: "set_crop", crop: "imax_143" });
   await userEvent.click(screen.getByRole("button", { name: "Play for everyone" }));
   expect(sent).toContainEqual({ type: "toggle_play" });
 });
