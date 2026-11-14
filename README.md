@@ -4,23 +4,31 @@ Watch a movie with friends from separate Macs, in sync. Everyone plays their
 own local copy; WatchSync keeps the players together. Pause, play or seek on
 any Mac and it happens for everyone. No accounts.
 
-## For friends: install
+## Install
 
-1. Download `WatchSync-<version>-macos.zip`, unzip it, and drag **WatchSync** to
-   Applications. (Works on Apple Silicon and Intel Macs.)
-2. The first time, **right-click WatchSync → Open → Open**. The app isn't
-   notarized by Apple, so a normal double-click is blocked once. On newer macOS:
-   if that doesn't offer "Open", go to System Settings → Privacy & Security and
-   click **Open Anyway**.
-3. If mpv (the video player) is missing, WatchSync shows a one-time setup:
-   - with Homebrew: click **Install mpv** (runs `brew install mpv`);
-   - without Homebrew: click **Copy command**, paste it into Terminal, press
-     Return, then click **Check again**.
+Open **Terminal**, paste this line and press Return:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/actuallyakshat/watchsync/main/scripts/install.sh)"
+```
+
+It installs WatchSync into Applications, installs the video player (mpv,
+plus Homebrew if needed; it may ask for your Mac password), and opens the app.
+Run the same line again to update.
+
+Prefer downloading by hand? Get `WatchSync-macos.zip` from the
+[latest release](https://github.com/actuallyakshat/watchsync/releases/latest).
+The app isn't notarized by Apple (that needs a paid developer account), so a
+browser download shows a "can't verify" warning the first time: open it via
+System Settings → Privacy & Security → **Open Anyway**. The Terminal installer
+avoids this because macOS only checks files downloaded through browsers and
+chat apps.
 
 ## Build a release
 
 ```bash
-./scripts/bundle-macos.sh   # → dist/WatchSync-<version>-macos.zip (universal)
+./scripts/bundle-macos.sh   # → dist/WatchSync-macos.zip (universal)
+swift scripts/make-icon.swift  # regenerate assets/WatchSync.icns
 ```
 
 ## Run from source

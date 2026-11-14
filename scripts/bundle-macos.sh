@@ -16,6 +16,9 @@ lipo -create \
   target/x86_64-apple-darwin/release/watchsync \
   -output "$APP/Contents/MacOS/WatchSync"
 
+mkdir -p "$APP/Contents/Resources"
+cp assets/WatchSync.icns "$APP/Contents/Resources/WatchSync.icns"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -26,6 +29,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>app.watchsync.WatchSync</string>
   <key>CFBundleExecutable</key><string>WatchSync</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>WatchSync</string>
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
@@ -37,5 +41,6 @@ PLIST
 # Ad-hoc signature (required to run on Apple Silicon). Not notarized.
 codesign --force --deep --sign - "$APP"
 
-(cd dist && ditto -c -k --keepParent WatchSync.app "WatchSync-${VERSION}-macos.zip")
-echo "Built dist/WatchSync-${VERSION}-macos.zip"
+# Fixed file name so .../releases/latest/download/WatchSync-macos.zip always works.
+(cd dist && ditto -c -k --keepParent WatchSync.app WatchSync-macos.zip)
+echo "Built dist/WatchSync-macos.zip (v${VERSION})"
