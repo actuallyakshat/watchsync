@@ -27,6 +27,12 @@ pub struct PeerInfo {
     /// App version ("" = too old to say).
     #[serde(default)]
     pub version: String,
+    /// Endpoint id, so a successor can recognise itself ("" = 0.2.x app).
+    #[serde(default)]
+    pub id: String,
+    /// The peer's own address code, so others can reach it if it becomes host.
+    #[serde(default)]
+    pub code: String,
 }
 
 /// This build's version, exchanged so mismatched apps can be flagged.
@@ -41,6 +47,12 @@ pub enum Msg {
         name: String,
         #[serde(default)]
         version: String,
+        /// Endpoint id and address code ("" from 0.2.x apps, which then
+        /// can't take over as host).
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        code: String,
     },
     /// guest → host clock probe; host answers with Pong.
     Ping { t0: f64 },
@@ -60,6 +72,8 @@ pub enum Msg {
     Crop { crop: Crop, by: String },
     /// guest → host: "call me this now".
     Rename { name: String },
+    /// host → all: "I'm leaving; this peer (endpoint id) takes over".
+    HostLeaving { successor: String },
 }
 
 #[derive(Debug)]
@@ -75,8 +89,25 @@ pub enum NetEvent {
     PeerLeft {
         id: u64,
     },
-    FromHost(Msg),
-    HostLost,
+    /// A message on host connection number `conn`.
+    FromHost { conn: u64, msg: Msg },
+    /// Host connection number `conn` closed.
+    HostLost { conn: u64 },
+    /// Result of a background (re)connection attempt.
+    Connected {
+        attempt: u64,
+        result: Result<HostLink, String>,
+    },
+}
+
+/// A live connection to the host.
+#[derive(Debug, Clone)]
+pub struct HostLink {
+    pub conn: u64,
+    pub tx: mpsc::UnboundedSender<Msg>,
+    pub connection: iroh::endpoint::Connection,
+    /// The code we dialled.
+    pub code: String,
 }
 
 fn err(e: impl std::fmt::Display) -> anyhow::Error {
@@ -129,20 +160,32 @@ fn spawn_reader(
     });
 }
 
-/// Start hosting. Returns the endpoint (keep it alive) and the room code.
-pub async fn host(events: mpsc::UnboundedSender<NetEvent>) -> Result<(Endpoint, String)> {
+/// Bind an endpoint that can both join rooms and host one, and wait until
+/// it's reachable (so its address code includes the relay).
+pub async fn bind() -> Result<Endpoint> {
     let endpoint = Endpoint::builder(presets::N0)
         .alpns(vec![ALPN.to_vec()])
         .bind()
         .await
         .map_err(err)?;
     endpoint.online().await;
-    let code = encode_code(&endpoint.addr());
+    Ok(endpoint)
+}
 
-    let ep = endpoint.clone();
+/// The address code others use to reach this endpoint.
+pub fn code_of(endpoint: &Endpoint) -> String {
+    encode_code(&endpoint.addr())
+}
+
+pub fn id_of(endpoint: &Endpoint) -> String {
+    endpoint.id().to_string()
+}
+
+/// Start accepting guests on `endpoint` (call once, when becoming host).
+pub fn serve(endpoint: Endpoint, events: mpsc::UnboundedSender<NetEvent>) {
     tokio::spawn(async move {
         let mut next_id = 1u64;
-        while let Some(incoming) = ep.accept().await {
+        while let Some(incoming) = endpoint.accept().await {
             let id = next_id;
             next_id += 1;
             let events = events.clone();
@@ -171,39 +214,67 @@ pub async fn host(events: mpsc::UnboundedSender<NetEvent>) -> Result<(Endpoint, 
             });
         }
     });
-    Ok((endpoint, code))
 }
 
-/// Join a room. Returns the endpoint (keep it alive) and a sender to the host.
-pub async fn join(
+/// Connect `endpoint` to the host at `code` and send `hello` first.
+/// Messages arrive as `FromHost { conn }`, the end as `HostLost { conn }`.
+pub async fn connect(
+    endpoint: &Endpoint,
     code: &str,
-    name: String,
+    conn: u64,
+    hello: Msg,
     events: mpsc::UnboundedSender<NetEvent>,
-) -> Result<(Endpoint, mpsc::UnboundedSender<Msg>)> {
+) -> Result<HostLink> {
     let addr = decode_code(code)?;
-    let endpoint = Endpoint::bind(presets::N0).await.map_err(err)?;
-    let conn = endpoint.connect(addr, ALPN).await.map_err(err)?;
-    let (send, recv) = conn.open_bi().await.map_err(err)?;
+    let connection = endpoint.connect(addr, ALPN).await.map_err(err)?;
+    let (send, recv) = connection.open_bi().await.map_err(err)?;
     let tx = spawn_writer(send);
     let ev_msg = events.clone();
     spawn_reader(
         recv,
         move |msg| {
-            let _ = ev_msg.send(NetEvent::FromHost(msg));
+            let _ = ev_msg.send(NetEvent::FromHost { conn, msg });
         },
         move || {
-            let _ = events.send(NetEvent::HostLost);
+            let _ = events.send(NetEvent::HostLost { conn });
         },
     );
     // A QUIC stream only reaches the other side once data is written,
     // so say hello right away.
-    let _ = tx.send(Msg::Hello {
-        name,
+    let _ = tx.send(hello);
+    Ok(HostLink {
+        conn,
+        tx,
+        connection,
+        code: code.trim().to_string(),
+    })
+}
+
+/// The Hello a guest sends.
+pub fn hello(name: &str, endpoint: &Endpoint) -> Msg {
+    Msg::Hello {
+        name: name.to_string(),
         version: APP_VERSION.to_string(),
-    });
-    // Keep the connection alive for as long as the endpoint lives.
-    tokio::spawn(async move {
-        conn.closed().await;
-    });
-    Ok((endpoint, tx))
+        id: id_of(endpoint),
+        code: code_of(endpoint),
+    }
+}
+
+/// Start hosting on a fresh endpoint. Returns it (keep it alive) and the code.
+pub async fn host(events: mpsc::UnboundedSender<NetEvent>) -> Result<(Endpoint, String)> {
+    let endpoint = bind().await?;
+    serve(endpoint.clone(), events);
+    let code = code_of(&endpoint);
+    Ok((endpoint, code))
+}
+
+/// Join a room from a fresh endpoint. Returns it (keep it alive) and the link.
+pub async fn join(
+    code: &str,
+    name: String,
+    events: mpsc::UnboundedSender<NetEvent>,
+) -> Result<(Endpoint, HostLink)> {
+    let endpoint = bind().await?;
+    let link = connect(&endpoint, code, 0, hello(&name, &endpoint), events).await?;
+    Ok((endpoint, link))
 }

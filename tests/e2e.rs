@@ -8,80 +8,12 @@ use common::*;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use watchsync::engine::{self, FileStatus, Phase, Snapshot, UiCmd};
+use watchsync::engine::{FileStatus, Phase, UiCmd};
 use watchsync::sync::Crop;
 
 /// Max allowed position difference between two players while playing.
 /// 24fps → a frame is ~42ms; we demand < 2.5 frames.
 const IN_SYNC: f64 = 0.1;
-
-struct Peer {
-    cmd: async_channel::Sender<UiCmd>,
-    snaps: async_channel::Receiver<Snapshot>,
-    last: Snapshot,
-}
-
-impl Peer {
-    /// Start an engine on its own runtime thread, exactly like the app does.
-    fn start(name: &str) -> Self {
-        let (snap_tx, snaps) = async_channel::bounded(1);
-        let (cmd, cmd_rx) = async_channel::unbounded();
-        let name = name.to_string();
-        std::thread::spawn(move || {
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(engine::run(name, snap_tx, cmd_rx));
-        });
-        Self {
-            cmd,
-            snaps,
-            last: Snapshot::default(),
-        }
-    }
-
-    fn send(&self, cmd: UiCmd) {
-        self.cmd.send_blocking(cmd).unwrap();
-    }
-
-    /// Wait until a snapshot satisfies `pred`.
-    fn wait(&mut self, what: &str, secs: u64, pred: impl Fn(&Snapshot) -> bool) -> Snapshot {
-        let deadline = Instant::now() + Duration::from_secs(secs);
-        loop {
-            while let Ok(s) = self.snaps.try_recv() {
-                self.last = s;
-            }
-            if pred(&self.last) {
-                return self.last.clone();
-            }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for: {what} (error: {:?})",
-                self.last.error
-            );
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    fn socket(&mut self) -> PathBuf {
-        self.wait("player open", 15, |s| s.player_socket.is_some())
-            .player_socket
-            .unwrap()
-    }
-}
-
-impl Drop for Peer {
-    /// Leave the room so the engine closes its mpv. Otherwise the headless
-    /// players outlive the test process.
-    fn drop(&mut self) {
-        let _ = self.cmd.send_blocking(UiCmd::Leave);
-        let _ = eventually(Duration::from_secs(3), || {
-            while let Ok(s) = self.snaps.try_recv() {
-                self.last = s;
-            }
-            !self.last.player_open
-        });
-    }
-}
 
 /// Positions of two players, sampled back to back.
 fn positions(a: &Path, b: &Path) -> (f64, f64) {

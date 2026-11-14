@@ -4,7 +4,7 @@
 
 use crate::fingerprint::fingerprint;
 use crate::mpv::{Mpv, MpvEvent};
-use crate::net::{self, Intent, Msg, NetEvent, PeerInfo};
+use crate::net::{self, HostLink, Intent, Msg, NetEvent, PeerInfo};
 use crate::sync::{
     ClockSync, Correction, Crop, PLAY_LEAD_MS, PlaybackState, correction, crop_geometry,
     format_time, now_ms,
@@ -30,6 +30,42 @@ pub enum UiCmd {
     SetCrop { crop: Crop },
     SetName { name: String },
     Leave,
+    /// Test only: drop the connection to the host as if the network blinked.
+    #[doc(hidden)]
+    TestDropHostLink,
+    /// Test only: vanish without telling anyone, as if the Mac went to sleep.
+    #[doc(hidden)]
+    TestCrash,
+}
+
+/// How quickly connection problems are noticed and handled.
+#[derive(Clone, Copy, Debug)]
+pub struct Timing {
+    /// No word from the host for this long means the connection is gone.
+    pub silence: Duration,
+    /// Keep trying the old host this long before moving to a successor.
+    pub old_host_grace: Duration,
+    /// How long to try each successor before trying the next.
+    pub successor_window: Duration,
+    /// Give up on the room after this long without a host.
+    pub give_up: Duration,
+    /// Host drops a guest it hasn't heard from for this long.
+    pub peer_timeout: Duration,
+    /// One connection attempt.
+    pub attempt: Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self {
+            silence: Duration::from_secs(6),
+            old_host_grace: Duration::from_secs(8),
+            successor_window: Duration::from_secs(12),
+            give_up: Duration::from_secs(60),
+            peer_timeout: Duration::from_secs(10),
+            attempt: Duration::from_secs(6),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Debug, Serialize)]
@@ -88,12 +124,35 @@ pub struct Snapshot {
     pub crop_by: Option<String>,
     /// Whether the crop is actually applied to this player.
     pub crop_applied: bool,
+    /// Lost the host; reconnecting (or waiting for a new host) in the background.
+    pub reconnecting: bool,
+    /// How many times this session has reconnected after losing the host.
+    pub reconnects: u32,
 }
 
 enum Role {
     None,
-    Host { peers: HashMap<u64, Peer> },
-    Guest { tx: mpsc::UnboundedSender<Msg> },
+    Host {
+        peers: HashMap<u64, Peer>,
+    },
+    Guest {
+        /// None while reconnecting.
+        link: Option<HostLink>,
+        lost: Option<Lost>,
+    },
+}
+
+/// A guest that has lost its host.
+struct Lost {
+    since: Instant,
+    /// The old host's code, for retrying it first.
+    old_code: String,
+    old_id: String,
+    /// Set when the host said who takes over.
+    successor: Option<String>,
+    /// Background connection attempt in flight (its number).
+    attempting: Option<u64>,
+    last_attempt: Instant,
 }
 
 struct Peer {
@@ -102,6 +161,10 @@ struct Peer {
     fingerprint: Option<String>,
     drift_ms: Option<f64>,
     version: String,
+    /// Endpoint id and address code ("" for 0.2.x apps).
+    id: String,
+    code: String,
+    last_seen: Instant,
 }
 
 /// Longest display name, in characters.
@@ -113,6 +176,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const OWN_PAUSE_GRACE: Duration = Duration::from_millis(400);
 
 struct Engine {
+    timing: Timing,
     name: String,
     ui: async_channel::Sender<Snapshot>,
     net_tx: mpsc::UnboundedSender<NetEvent>,
@@ -120,8 +184,15 @@ struct Engine {
 
     phase: Phase,
     role: Role,
-    _endpoint: Option<Endpoint>,
+    endpoint: Option<Endpoint>,
+    /// Accepting guests on `endpoint` already.
+    serving: bool,
+    /// The host's code (shared as the invite).
     code: Option<String>,
+    /// Numbers host connections and attempts so stale ones are ignored.
+    next_conn: u64,
+    last_host_msg: Instant,
+    reconnects: u32,
     error: Option<String>,
 
     state: PlaybackState,
@@ -156,18 +227,32 @@ pub async fn run(
     ui: async_channel::Sender<Snapshot>,
     cmds: async_channel::Receiver<UiCmd>,
 ) {
+    run_with(name, ui, cmds, Timing::default()).await
+}
+
+pub async fn run_with(
+    name: String,
+    ui: async_channel::Sender<Snapshot>,
+    cmds: async_channel::Receiver<UiCmd>,
+    timing: Timing,
+) {
     let (net_tx, mut net_rx) = mpsc::unbounded_channel();
     let (mpv_tx, mut mpv_rx) = mpsc::unbounded_channel();
     let now = Instant::now();
     let mut e = Engine {
+        timing,
         name,
         ui,
         net_tx,
         mpv_tx,
         phase: Phase::Home,
         role: Role::None,
-        _endpoint: None,
+        endpoint: None,
+        serving: false,
         code: None,
+        next_conn: 1,
+        last_host_msg: now,
+        reconnects: 0,
         error: None,
         state: PlaybackState::default(),
         clock: ClockSync::default(),
@@ -211,6 +296,14 @@ pub async fn run(
 }
 
 impl Engine {
+    /// Sender to the host, if connected as a guest.
+    fn host_tx(&self) -> Option<&mpsc::UnboundedSender<Msg>> {
+        match &self.role {
+            Role::Guest { link: Some(l), .. } => Some(&l.tx),
+            _ => None,
+        }
+    }
+
     fn host_now(&self) -> f64 {
         match self.role {
             Role::Guest { .. } => now_ms() + self.clock.offset(),
@@ -242,47 +335,42 @@ impl Engine {
             UiCmd::Host if self.phase == Phase::Home => {
                 self.phase = Phase::Connecting;
                 self.publish();
-                match timeout(CONNECT_TIMEOUT, net::host(self.net_tx.clone()))
-                    .await
-                    .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out. Are you online?")))
-                {
-                    Ok((endpoint, code)) => {
-                        self._endpoint = Some(endpoint);
-                        self.code = Some(code);
+                match timeout(CONNECT_TIMEOUT, net::bind()).await {
+                    Ok(Ok(endpoint)) => {
+                        net::serve(endpoint.clone(), self.net_tx.clone());
+                        self.serving = true;
+                        self.code = Some(net::code_of(&endpoint));
+                        self.endpoint = Some(endpoint);
                         self.role = Role::Host {
                             peers: HashMap::new(),
                         };
                         self.phase = Phase::Room;
                         self.refresh_peers();
                     }
-                    Err(e) => {
-                        self.error = Some(format!("Couldn't start a room: {e}"));
-                        self.phase = Phase::Home;
-                    }
+                    Ok(Err(e)) => self.fail_to_home(format!("Couldn't start a room: {e}")),
+                    Err(_) => self.fail_to_home("Couldn't start a room: timed out. Are you online?".into()),
                 }
             }
             UiCmd::Join { code } if self.phase == Phase::Home => {
                 self.phase = Phase::Connecting;
                 self.publish();
-                let joining = net::join(&code, self.name.clone(), self.net_tx.clone());
-                match timeout(CONNECT_TIMEOUT, joining)
-                    .await
-                    .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out. Is the host still online?")))
-                {
-                    Ok((endpoint, tx)) => {
-                        // A few quick clock probes so the offset is good from the start.
-                        for _ in 0..5 {
-                            let _ = tx.send(Msg::Ping { t0: now_ms() });
-                        }
-                        self._endpoint = Some(endpoint);
-                        self.code = Some(code.trim().to_string());
-                        self.role = Role::Guest { tx };
+                let code = code.trim().to_string();
+                let attempt = async {
+                    let endpoint = net::bind().await?;
+                    let hello = net::hello(&self.name, &endpoint);
+                    let link = net::connect(&endpoint, &code, self.next_conn, hello, self.net_tx.clone()).await?;
+                    anyhow::Ok((endpoint, link))
+                };
+                match timeout(CONNECT_TIMEOUT, attempt).await {
+                    Ok(Ok((endpoint, link))) => {
+                        self.next_conn += 1;
+                        self.endpoint = Some(endpoint);
+                        self.code = Some(link.code.clone());
+                        self.connected_to(link, true);
                         self.phase = Phase::Room;
                     }
-                    Err(e) => {
-                        self.error = Some(format!("Couldn't join: {e}"));
-                        self.phase = Phase::Home;
-                    }
+                    Ok(Err(e)) => self.fail_to_home(format!("Couldn't join: {e}")),
+                    Err(_) => self.fail_to_home("Couldn't join: timed out. Is the host still online?".into()),
                 }
             }
             UiCmd::OpenFile { path } => self.open_file(path).await,
@@ -306,6 +394,19 @@ impl Engine {
             }
             UiCmd::SetName { name } => self.rename(name).await,
             UiCmd::Leave => self.leave().await,
+            UiCmd::TestDropHostLink => {
+                if let Role::Guest { link: Some(l), .. } = &self.role {
+                    l.connection.close(0u32.into(), b"test");
+                }
+            }
+            UiCmd::TestCrash => {
+                // Close without HostLeaving: guests must notice on their own.
+                self.role = Role::None;
+                if let Some(endpoint) = self.endpoint.take() {
+                    endpoint.close().await;
+                }
+                self.leave().await;
+            }
             _ => {}
         }
     }
@@ -327,19 +428,54 @@ impl Engine {
         self.name = name.clone();
         if self.is_host() {
             self.refresh_peers();
-        } else if let Role::Guest { tx } = &self.role {
+        } else if let Some(tx) = self.host_tx() {
             let _ = tx.send(Msg::Rename { name });
         }
     }
 
-    /// Leave the room and close the player. (Hosting ends the room.)
-    async fn leave(&mut self) {
+    fn fail_to_home(&mut self, error: String) {
+        self.error = Some(error);
+        self.phase = Phase::Home;
         self.role = Role::None;
-        // Close properly so the others see us leave right away instead of
-        // after a network timeout.
-        if let Some(endpoint) = self._endpoint.take() {
+        if let Some(endpoint) = self.endpoint.take() {
             tokio::spawn(async move { endpoint.close().await });
         }
+        self.serving = false;
+    }
+
+    /// Who takes over if the host leaves: the earliest-joined guest that
+    /// can host (0.2.x apps can't), in the host's member list order.
+    fn successors(&self, excluding: &str) -> Vec<PeerInfo> {
+        self.room_peers
+            .iter()
+            .filter(|p| !p.is_host && !p.id.is_empty() && !p.code.is_empty() && p.id != excluding)
+            .cloned()
+            .collect()
+    }
+
+    /// Leave the room and close the player. A host hands the room over to
+    /// the next person; leaving alone ends it.
+    async fn leave(&mut self) {
+        if let Role::Host { peers } = &self.role
+            && !peers.is_empty()
+        {
+            let me = self.endpoint.as_ref().map(net::id_of).unwrap_or_default();
+            if let Some(next) = self.successors(&me).first() {
+                self.broadcast(Msg::HostLeaving {
+                    successor: next.id.clone(),
+                });
+            }
+        }
+        self.role = Role::None;
+        // Close properly so the others see us leave right away instead of
+        // after a network timeout (after a moment, so HostLeaving goes out).
+        if let Some(endpoint) = self.endpoint.take() {
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                endpoint.close().await
+            });
+        }
+        self.serving = false;
         self.code = None;
         self.phase = Phase::Home;
         self.room_peers.clear();
@@ -431,7 +567,7 @@ impl Engine {
         if self.is_host() {
             let name = self.name.clone();
             self.apply_intent(intent, name).await;
-        } else if let Role::Guest { tx } = &self.role {
+        } else if let Some(tx) = self.host_tx() {
             let _ = tx.send(Msg::Intent(intent));
             // Let mpv keep whatever the user just did until the host answers.
             self.hold_until = Instant::now() + Duration::from_millis(1500);
@@ -484,7 +620,17 @@ impl Engine {
             return;
         }
         let changed = s.version != self.state.version;
+        // A reconnect or a new host resends a state that says "keep going":
+        // don't seek for that, let speed nudging close any small gap.
+        let host_now = self.host_now();
+        let gentle = s.playing == self.state.playing
+            && (s.expected_position(host_now) - self.state.expected_position(host_now)).abs() < 0.25;
         self.state = s;
+        if gentle {
+            self.hold_until = Instant::now();
+            self.enforce().await;
+            return;
+        }
         self.hold_until = Instant::now();
         if changed
             && let (Some(mpv), Some(label)) = (self.mpv.clone(), self.state.label())
@@ -524,6 +670,9 @@ impl Engine {
     async fn on_tick(&mut self) {
         self.ticks += 1;
         self.enforce().await;
+        if self.ticks.is_multiple_of(3) {
+            self.reconnect_step().await;
+        }
         if self.ticks.is_multiple_of(5) {
             self.correct_drift().await;
         }
@@ -595,12 +744,17 @@ impl Engine {
         self.apply_crop().await;
         if self.is_host() {
             self.refresh_peers();
-        } else if let Role::Guest { tx } = &self.role {
+            self.prune_silent_peers().await;
+        } else if let Some(tx) = self.host_tx() {
             let _ = tx.send(Msg::Ping { t0: now_ms() });
             let _ = tx.send(Msg::Status {
                 fingerprint: self.fingerprint.clone(),
                 drift_ms: self.drift_ms,
             });
+            if self.last_host_msg.elapsed() > self.timing.silence {
+                // Nothing from the host for a while: treat it as gone.
+                self.host_lost(None);
+            }
         }
     }
 
@@ -662,6 +816,9 @@ impl Engine {
                             fingerprint: None,
                             drift_ms: None,
                             version: String::new(),
+                            id: String::new(),
+                            code: String::new(),
+                            last_seen: Instant::now(),
                         },
                     );
                 }
@@ -677,29 +834,203 @@ impl Engine {
                     self.refresh_peers();
                 }
             }
-            NetEvent::FromHost(msg) => match msg {
-                Msg::Pong { t0, host_ms } => self.clock.add_sample(t0, host_ms, now_ms()),
-                Msg::State(s) => self.apply_state(s).await,
-                Msg::Peers(list) => self.room_peers = list,
-                Msg::Crop { crop, by } => {
-                    if crop != self.crop {
-                        self.osd(&format!("{by} set the picture to {}", crop.label()))
-                            .await;
-                    }
-                    self.crop = crop;
-                    self.crop_by = Some(by);
-                    self.apply_crop().await;
+            NetEvent::FromHost { conn, msg } => {
+                if !matches!(&self.role, Role::Guest { link: Some(l), .. } if l.conn == conn) {
+                    return; // an old connection
                 }
-                _ => {}
-            },
-            NetEvent::HostLost => {
-                if matches!(self.role, Role::Guest { .. }) {
-                    self.role = Role::None;
-                    self.room_peers.clear();
-                    self.error = Some("Lost connection to the host. The room has ended.".into());
-                    self.osd("Lost connection to the host").await;
+                self.last_host_msg = Instant::now();
+                match msg {
+                    Msg::Pong { t0, host_ms } => self.clock.add_sample(t0, host_ms, now_ms()),
+                    Msg::State(s) => self.apply_state(s).await,
+                    Msg::Peers(list) => self.room_peers = list,
+                    Msg::Crop { crop, by } => {
+                        if crop != self.crop {
+                            self.osd(&format!("{by} set the picture to {}", crop.label()))
+                                .await;
+                        }
+                        self.crop = crop;
+                        self.crop_by = Some(by);
+                        self.apply_crop().await;
+                    }
+                    Msg::HostLeaving { successor } => self.host_lost(Some(successor)),
+                    _ => {}
                 }
             }
+            NetEvent::HostLost { conn } => {
+                if matches!(&self.role, Role::Guest { link: Some(l), .. } if l.conn == conn) {
+                    self.host_lost(None);
+                }
+            }
+            NetEvent::Connected { attempt, result } => {
+                let Role::Guest { lost: Some(lost), .. } = &mut self.role else {
+                    return;
+                };
+                if lost.attempting != Some(attempt) {
+                    return; // stale, or we left meanwhile
+                }
+                lost.attempting = None;
+                match result {
+                    Ok(link) => {
+                        let new_host = link.code != lost.old_code;
+                        self.connected_to(link, new_host);
+                        self.reconnects += 1;
+                        self.error = None;
+                        self.osd("Reconnected").await;
+                    }
+                    Err(_) => lost.last_attempt = Instant::now(),
+                }
+            }
+        }
+    }
+
+    /// Now talking to the host over `link`.
+    fn connected_to(&mut self, link: HostLink, new_host: bool) {
+        if new_host {
+            // A different Mac's clock: measure afresh, and don't correct
+            // drift until the first measurements are in.
+            self.clock = ClockSync::default();
+            self.quiet_for(2.5);
+        }
+        for _ in 0..5 {
+            let _ = link.tx.send(Msg::Ping { t0: now_ms() });
+        }
+        self.last_host_msg = Instant::now();
+        self.role = Role::Guest {
+            link: Some(link),
+            lost: None,
+        };
+    }
+
+    /// The host is gone (or said who takes over). Keep playing; reconnect in
+    /// the background.
+    fn host_lost(&mut self, successor: Option<String>) {
+        let Role::Guest { link, lost } = &mut self.role else {
+            return;
+        };
+        if let Some(l) = link.take() {
+            l.connection.close(0u32.into(), b"lost");
+            let old_id = self
+                .room_peers
+                .iter()
+                .find(|p| p.is_host)
+                .map(|p| p.id.clone())
+                .unwrap_or_default();
+            *lost = Some(Lost {
+                since: Instant::now(),
+                old_code: l.code,
+                old_id,
+                successor,
+                attempting: None,
+                last_attempt: Instant::now() - Duration::from_secs(60),
+            });
+        } else if let (Some(l), Some(s)) = (lost.as_mut(), successor) {
+            l.successor = Some(s);
+        }
+    }
+
+    /// While lost: retry the old host, then the successor (or become it).
+    async fn reconnect_step(&mut self) {
+        let Role::Guest { lost: Some(lost), .. } = &self.role else {
+            return;
+        };
+        if lost.attempting.is_some() || lost.last_attempt.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        let elapsed = lost.since.elapsed();
+        if elapsed > self.timing.give_up {
+            self.leave().await;
+            self.error = Some("Lost the room: nobody could take over as host.".into());
+            return;
+        }
+        let my_id = self.endpoint.as_ref().map(net::id_of).unwrap_or_default();
+        let candidates = self.successors(&lost.old_id);
+        let target = if let Some(next) = &lost.successor {
+            // The host told us who takes over.
+            candidates.iter().find(|p| &p.id == next).cloned()
+        } else if elapsed < self.timing.old_host_grace {
+            None // keep trying the old host for now
+        } else {
+            let i = ((elapsed - self.timing.old_host_grace).as_secs_f64()
+                / self.timing.successor_window.as_secs_f64()) as usize;
+            candidates.get(i).cloned()
+        };
+        let code = match &target {
+            Some(p) if p.id == my_id => {
+                self.become_host().await;
+                return;
+            }
+            Some(p) => p.code.clone(),
+            None if lost.successor.is_none() => lost.old_code.clone(),
+            None => return, // named successor isn't in our list yet
+        };
+        let (Some(endpoint), Role::Guest { lost: Some(lost), .. }) = (self.endpoint.clone(), &mut self.role)
+        else {
+            return;
+        };
+        let attempt = self.next_conn;
+        self.next_conn += 1;
+        lost.attempting = Some(attempt);
+        lost.last_attempt = Instant::now();
+        let hello = net::hello(&self.name, &endpoint);
+        let events = self.net_tx.clone();
+        let limit = self.timing.attempt;
+        tokio::spawn(async move {
+            let result = match timeout(limit, net::connect(&endpoint, &code, attempt, hello, events.clone())).await {
+                Ok(Ok(link)) => Ok(link),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err("timed out".into()),
+            };
+            let _ = events.send(NetEvent::Connected { attempt, result });
+        });
+    }
+
+    /// Take over as host, carrying on from where the room is.
+    async fn become_host(&mut self) {
+        let Some(endpoint) = self.endpoint.clone() else { return };
+        // Re-anchor the shared state on this Mac's clock.
+        let host_now = self.host_now();
+        let mut s = self.state.clone();
+        if s.playing {
+            let wait = (s.anchor_ms - host_now).max(0.0);
+            s.position = s.expected_position(host_now);
+            s.anchor_ms = now_ms() + wait;
+        } else {
+            s.anchor_ms = now_ms();
+        }
+        s.version += 1;
+        s.by = self.name.clone();
+        s.action = "is now the host".into();
+        self.clock = ClockSync::default();
+        self.state = s;
+        if !self.serving {
+            net::serve(endpoint.clone(), self.net_tx.clone());
+            self.serving = true;
+        }
+        self.code = Some(net::code_of(&endpoint));
+        self.role = Role::Host {
+            peers: HashMap::new(),
+        };
+        self.error = None;
+        self.refresh_peers();
+        self.osd("You're now the host").await;
+    }
+
+    /// Host: drop guests we haven't heard from (their connection died quietly).
+    async fn prune_silent_peers(&mut self) {
+        let timeout = self.timing.peer_timeout;
+        let gone: Vec<String> = match &mut self.role {
+            Role::Host { peers } => {
+                let ids: Vec<u64> = peers
+                    .iter()
+                    .filter(|(_, p)| p.last_seen.elapsed() > timeout)
+                    .map(|(id, _)| *id)
+                    .collect();
+                ids.iter().filter_map(|id| peers.remove(id)).map(|p| p.name).collect()
+            }
+            _ => return,
+        };
+        for name in gone {
+            self.osd(&format!("{name} left")).await;
         }
     }
 
@@ -710,10 +1041,23 @@ impl Engine {
         let Some(peer) = peers.get_mut(&id) else {
             return;
         };
+        peer.last_seen = Instant::now();
         match msg {
-            Msg::Hello { name, version } => {
+            Msg::Hello {
+                name,
+                version,
+                id: peer_id,
+                code,
+            } => {
                 peer.name = name.clone();
                 peer.version = version;
+                peer.id = peer_id.clone();
+                peer.code = code;
+                // Reconnecting after a blip: drop the stale entry for this Mac.
+                if !peer_id.is_empty() {
+                    peers.retain(|other, p| *other == id || p.id != peer_id);
+                }
+                let Some(peer) = peers.get(&id) else { return };
                 let _ = peer.tx.send(Msg::State(self.state.clone()));
                 let _ = peer.tx.send(Msg::Crop {
                     crop: self.crop,
@@ -763,21 +1107,31 @@ impl Engine {
         let Role::Host { peers } = &self.role else {
             return;
         };
+        let (my_id, my_code) = self
+            .endpoint
+            .as_ref()
+            .map(|e| (net::id_of(e), net::code_of(e)))
+            .unwrap_or_default();
         let mut list = vec![PeerInfo {
             name: self.name.clone(),
             is_host: true,
             fingerprint: self.fingerprint.clone(),
             drift_ms: self.drift_ms,
             version: net::APP_VERSION.to_string(),
+            id: my_id,
+            code: my_code,
         }];
-        let mut others: Vec<_> = peers.values().collect();
-        others.sort_by(|a, b| a.name.cmp(&b.name));
-        list.extend(others.into_iter().map(|p| PeerInfo {
+        // Join order: this is also the order of succession.
+        let mut others: Vec<_> = peers.iter().collect();
+        others.sort_by_key(|(id, _)| **id);
+        list.extend(others.into_iter().map(|(_, p)| PeerInfo {
             name: p.name.clone(),
             is_host: false,
             fingerprint: p.fingerprint.clone(),
             drift_ms: p.drift_ms,
             version: p.version.clone(),
+            id: p.id.clone(),
+            code: p.code.clone(),
         }));
         self.room_peers = list.clone();
         self.broadcast(Msg::Peers(list));
@@ -833,6 +1187,8 @@ impl Engine {
             crop: self.crop,
             crop_by: self.crop_by.clone(),
             crop_applied: self.applied_crop == Some((self.mpv_gen, self.crop)),
+            reconnecting: matches!(self.role, Role::Guest { link: None, .. }),
+            reconnects: self.reconnects,
         };
         // Bounded(1) channel: replace any snapshot the UI hasn't drawn yet.
         let _ = self.ui.force_send(snapshot);

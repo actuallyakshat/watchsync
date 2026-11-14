@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+use watchsync::engine::{self, Snapshot, Timing, UiCmd};
 
 pub const CLIP_SECS: f64 = 300.0;
 
@@ -87,3 +88,86 @@ pub fn eventually(timeout: Duration, mut check: impl FnMut() -> bool) -> bool {
     }
     false
 }
+
+/// One person in a test room: an engine running exactly as in the app.
+pub struct Peer {
+    pub cmd: async_channel::Sender<UiCmd>,
+    pub snaps: async_channel::Receiver<Snapshot>,
+    pub last: Snapshot,
+}
+
+impl Peer {
+    /// Start an engine on its own runtime thread, exactly like the app does.
+    pub fn start(name: &str) -> Self {
+        Self::start_with(name, Timing::default())
+    }
+
+    /// Same, with custom connection timings (tests use short ones).
+    pub fn start_with(name: &str, timing: Timing) -> Self {
+        let (snap_tx, snaps) = async_channel::bounded(1);
+        let (cmd, cmd_rx) = async_channel::unbounded();
+        let name = name.to_string();
+        std::thread::spawn(move || {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(engine::run_with(name, snap_tx, cmd_rx, timing));
+        });
+        Self {
+            cmd,
+            snaps,
+            last: Snapshot::default(),
+        }
+    }
+
+    pub fn send(&self, cmd: UiCmd) {
+        self.cmd.send_blocking(cmd).unwrap();
+    }
+
+    /// Wait until a snapshot satisfies `pred`.
+    pub fn wait(&mut self, what: &str, secs: u64, pred: impl Fn(&Snapshot) -> bool) -> Snapshot {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        loop {
+            while let Ok(s) = self.snaps.try_recv() {
+                self.last = s;
+            }
+            if pred(&self.last) {
+                return self.last.clone();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for: {what} (error: {:?})",
+                self.last.error
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Latest snapshot without waiting.
+    pub fn now(&mut self) -> Snapshot {
+        while let Ok(s) = self.snaps.try_recv() {
+            self.last = s;
+        }
+        self.last.clone()
+    }
+
+    pub fn socket(&mut self) -> PathBuf {
+        self.wait("player open", 15, |s| s.player_socket.is_some())
+            .player_socket
+            .unwrap()
+    }
+}
+
+impl Drop for Peer {
+    /// Leave the room so the engine closes its mpv. Otherwise the headless
+    /// players outlive the test process.
+    fn drop(&mut self) {
+        let _ = self.cmd.send_blocking(UiCmd::Leave);
+        let _ = eventually(Duration::from_secs(3), || {
+            while let Ok(s) = self.snaps.try_recv() {
+                self.last = s;
+            }
+            !self.last.player_open
+        });
+    }
+}
+

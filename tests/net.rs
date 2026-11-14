@@ -33,7 +33,7 @@ async fn host_and_guest_exchange_messages() {
     assert_eq!(decoded.id, host_ep.id());
 
     let (guest_tx, mut guest_rx) = mpsc::unbounded_channel();
-    let (guest_ep, to_host) = timeout(
+    let (guest_ep, link) = timeout(
         Duration::from_secs(30),
         net::join(&pasted, "Riya".into(), guest_tx),
     )
@@ -47,22 +47,28 @@ async fn host_and_guest_exchange_messages() {
         other => panic!("expected PeerJoined first, got {other:?}"),
     };
     match next(&mut host_rx).await {
-        NetEvent::FromPeer { msg: Msg::Hello { name, version }, .. } => {
+        NetEvent::FromPeer { msg: Msg::Hello { name, version, id, code }, .. } => {
             assert_eq!(name, "Riya");
             assert_eq!(version, net::APP_VERSION);
+            // Enough to recognise and reach the guest if it becomes host.
+            assert_eq!(id, net::id_of(&guest_ep));
+            assert_eq!(net::decode_code(&code).unwrap().id, guest_ep.id());
         }
         other => panic!("expected Hello, got {other:?}"),
     }
 
     // guest → host → guest round trip
-    to_host.send(Msg::Ping { t0: 1.0 }).unwrap();
+    link.tx.send(Msg::Ping { t0: 1.0 }).unwrap();
     match next(&mut host_rx).await {
         NetEvent::FromPeer { msg: Msg::Ping { t0 }, .. } => assert_eq!(t0, 1.0),
         other => panic!("expected Ping, got {other:?}"),
     }
     to_guest.send(Msg::Pong { t0: 1.0, host_ms: 2.0 }).unwrap();
     match next(&mut guest_rx).await {
-        NetEvent::FromHost(Msg::Pong { t0, host_ms }) => assert_eq!((t0, host_ms), (1.0, 2.0)),
+        NetEvent::FromHost { msg: Msg::Pong { t0, host_ms }, conn } => {
+            assert_eq!((t0, host_ms), (1.0, 2.0));
+            assert_eq!(conn, link.conn);
+        }
         other => panic!("expected Pong, got {other:?}"),
     }
 
@@ -79,8 +85,21 @@ async fn host_and_guest_exchange_messages() {
 fn old_and_new_apps_understand_each_other() {
     // A 0.1.x guest's Hello has no version: still parses, version is "".
     let old: Msg = serde_json::from_str(r#"{"Hello":{"name":"Riya"}}"#).unwrap();
-    assert!(matches!(old, Msg::Hello { ref version, .. } if version.is_empty()));
+    assert!(matches!(old, Msg::Hello { ref version, ref id, ref code, .. }
+        if version.is_empty() && id.is_empty() && code.is_empty()));
+    // A 0.2.x host's member list (no id/code) still parses.
+    let peers: Msg = serde_json::from_str(
+        r#"{"Peers":[{"name":"A","is_host":true,"fingerprint":null,"drift_ms":null,"version":"0.2.4"}]}"#,
+    )
+    .unwrap();
+    assert!(matches!(peers, Msg::Peers(ref l) if l[0].id.is_empty()));
     // A 0.1.x host reads our Hello fine too (extra fields are ignored by serde).
-    let ours = serde_json::to_string(&Msg::Hello { name: "A".into(), version: "0.2.0".into() }).unwrap();
+    let ours = serde_json::to_string(&Msg::Hello {
+        name: "A".into(),
+        version: "0.3.0".into(),
+        id: "x".into(),
+        code: "y".into(),
+    })
+    .unwrap();
     assert!(ours.contains(r#""name":"A""#));
 }
