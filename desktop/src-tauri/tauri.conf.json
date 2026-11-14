@@ -57,6 +57,13 @@
       "endpoints": [
         "https://github.com/actuallyakshat/watchsync/releases/latest/download/latest.json"
       ]
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "watchsync"
+        ]
+      }
     }
   }
 }

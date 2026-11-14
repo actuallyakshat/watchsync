@@ -1,25 +1,28 @@
 import { useState } from "react";
-import type { Person, Snapshot } from "../api";
+import type { Person, Reaction, Snapshot } from "../api";
 import { formatDrift } from "../format";
 import type { UpdateState } from "../update";
+import { Chat } from "./Chat";
 import { ArrowUpIcon, CheckIcon, CopyIcon, GearIcon, Mark } from "./Icons";
 
 interface Props {
   snap: Snapshot;
   version: string;
   update: UpdateState;
-  onCopyCode: () => Promise<void>;
+  onCopyInvite: () => Promise<void>;
   onUpdate: () => void;
   settingsOpen: boolean;
   onSettings: () => void;
+  onChat: (text: string) => void;
+  onReact: (r: Reaction) => void;
 }
 
-export function Sidebar({ snap, version, update, onCopyCode, onUpdate, settingsOpen, onSettings }: Props) {
+export function Sidebar({ snap, version, update, onCopyInvite, onUpdate, settingsOpen, onSettings, onChat, onReact }: Props) {
   const [copied, setCopied] = useState(false);
   const inRoom = snap.phase === "room";
 
   const copy = async () => {
-    await onCopyCode();
+    await onCopyInvite();
     setCopied(true);
     setTimeout(() => setCopied(false), 1800);
   };
@@ -40,14 +43,16 @@ export function Sidebar({ snap, version, update, onCopyCode, onUpdate, settingsO
           ))}
         </ul>
       ) : (
-        <p className="side-empty people">{inRoom ? "Just you so far." : "Host or join a room to see who's watching."}</p>
+        <p className="side-empty">{inRoom ? "Just you so far." : "Host or join a room to see who's watching."}</p>
       )}
 
+      {inRoom ? <Chat lines={snap.chat} onSend={onChat} onReact={onReact} /> : <div className="spacer" />}
+
       <div className="sidebar-foot">
-        {inRoom && snap.is_host && snap.code && (
-          <button className="foot-link" onClick={copy} title="Copy the code friends use to join">
+        {inRoom && snap.invite_link && (
+          <button className="foot-link" onClick={copy} title="Copy the link friends tap to join">
             {copied ? <CheckIcon /> : <CopyIcon />}
-            {copied ? "Copied. Send it to friends" : "Copy invite code"}
+            {copied ? "Copied. Send it to friends" : "Copy invite link"}
           </button>
         )}
         <UpdateLink state={update} onUpdate={onUpdate} />

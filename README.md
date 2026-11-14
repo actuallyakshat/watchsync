@@ -27,11 +27,19 @@ security warning. Update with `brew upgrade --cask watchsync`.
   arrow keys, seek bar).
 - **Stays in sync**: players drift-correct by nudging speed ±5% (inaudible),
   and jump only when more than 1.5 s off.
+- **Invite links**: *Copy invite link* gives a link friends tap to open
+  WatchSync straight into the room.
+- **Survives trouble**: if your connection blinks, you rejoin on your own
+  while the movie keeps playing. If the host leaves or their Mac goes to
+  sleep, the next person who joined takes over as host.
+- **Chat and reactions**, in the sidebar and on the movie itself.
 - **Same picture for everyone**: pick a crop (4:3, IMAX 1.43:1, 1.66:1, 16:9,
-  1.85:1, IMAX 1.90:1, 2.00:1, 2.20:1, 2.39:1, 2.76:1) and
-  every player shows exactly the same part of the frame.
+  1.85:1, IMAX 1.90:1, 2.00:1, 2.20:1, 2.39:1, 2.76:1) and every player shows
+  exactly the same part of the frame.
+- **Just for you**: your own audio track and subtitles, volume levelling and
+  dialogue boost.
 - **File check**: shows whether everyone's copy matches the host's.
-- **In-app updates**: a signed update feed; click *Update* in the sidebar.
+- **In-app updates**: a signed update feed; Settings → Check for updates.
 
 ## Build a release
 
@@ -90,10 +98,14 @@ drift recovery, a shared 2.39:1 crop and a late joiner.
 | `src/fingerprint.rs` | Quick file identity check |
 | `desktop/src-tauri` | The macOS app: bridges the engine to the window |
 | `desktop/src` | The UI (React), styled with Tars's design tokens |
+| `docs/join` | The invite-link page (GitHub Pages) that opens the app |
 
 ## Known limits
 
-- If the host leaves, the room ends (no host migration yet).
+- After the host changes, the old invite link stops working; the new host's
+  *Copy invite link* gives a fresh one.
+- Friends on 0.2.x can't take over as host, see chat, or use invite links;
+  they lose the room if the host leaves. Everyone should update.
 - Friends on 0.1.x need `brew upgrade --cask watchsync` once; in-app updates
   start with 0.2.0.
 - Use headphones if you're also on a call, or you'll hear each other's audio echo.

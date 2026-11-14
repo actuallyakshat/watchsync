@@ -30,6 +30,8 @@ const needs: [RegExp, string[]][] = [
   [/\bdownloadAndInstall\(/, ["updater:default", "updater:allow-download-and-install"]],
   [/\brelaunch\(\)/, ["process:default", "process:allow-restart"]],
   [/data-tauri-drag-region/, ["core:window:allow-start-dragging"]],
+  [/\bgetCurrent\(\)/, ["deep-link:default", "deep-link:allow-get-current"]],
+  [/\bonOpenUrl\(/, ["core:default", "core:event:default"]],
 ];
 
 test.each(needs)("UI uses %s, so the window is allowed to", (pattern, perms) => {

@@ -72,6 +72,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // watchsync://join/<code> links open the app and join the room.
+        .plugin(tauri_plugin_deep_link::init())
         .manage(Bridge { cmd: cmd_tx })
         .invoke_handler(tauri::generate_handler![send, player_setup, install_player])
         .setup(move |app| {

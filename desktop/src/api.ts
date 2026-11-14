@@ -18,6 +18,32 @@ export type Crop =
   | "scope"
   | "ultra_276";
 
+export type Reaction = "laugh" | "wow" | "love" | "fire" | "clap" | "sad";
+export type TrackKind = "audio" | "subtitle";
+
+export interface ChatLine {
+  from: string;
+  text: string | null;
+  reaction: Reaction | null;
+  mine: boolean;
+  at_ms: number;
+}
+
+export interface Track {
+  id: number;
+  kind: TrackKind;
+  title: string | null;
+  lang: string | null;
+  selected: boolean;
+  channels: number | null;
+  codec: string | null;
+}
+
+export interface Comfort {
+  level_volume: boolean;
+  boost_dialogue: boolean;
+}
+
 export interface Person {
   name: string;
   is_host: boolean;
@@ -46,6 +72,12 @@ export interface Snapshot {
   crop: Crop;
   crop_by: string | null;
   crop_applied: boolean;
+  reconnecting: boolean;
+  reconnects: number;
+  chat: ChatLine[];
+  tracks: Track[];
+  comfort: Comfort;
+  invite_link: string | null;
 }
 
 export type Command =
@@ -57,6 +89,10 @@ export type Command =
   | { type: "seek_to"; position: number }
   | { type: "set_crop"; crop: Crop }
   | { type: "set_name"; name: string }
+  | { type: "chat"; text: string }
+  | { type: "react"; reaction: Reaction }
+  | { type: "set_track"; kind: TrackKind; id: number | null }
+  | { type: "set_comfort"; comfort: Comfort }
   | { type: "leave" };
 
 export interface PlayerSetup {
@@ -89,4 +125,10 @@ export const EMPTY: Snapshot = {
   crop: "original",
   crop_by: null,
   crop_applied: false,
+  reconnecting: false,
+  reconnects: 0,
+  chat: [],
+  tracks: [],
+  comfort: { level_volume: false, boost_dialogue: false },
+  invite_link: null,
 };

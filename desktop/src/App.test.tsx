@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import type { Snapshot } from "./api";
@@ -41,6 +41,16 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
   }),
 }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn(async () => {}) }));
+let launchUrls: string[] | null = null;
+let openUrl: (urls: string[]) => void = () => {};
+vi.mock("@tauri-apps/plugin-deep-link", () => ({
+  getCurrent: vi.fn(async () => launchUrls),
+  onOpenUrl: vi.fn(async (f: (urls: string[]) => void) => {
+    openUrl = f;
+    return () => {};
+  }),
+}));
+const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
 
 const { App } = await import("./App");
 
@@ -63,6 +73,13 @@ const room: Snapshot = {
     { name: "Kabir", is_host: false, file: "no_file", drift_ms: null, version: "", outdated: true },
   ],
   my_file: "match",
+  invite_link: "https://actuallyakshat.github.io/watchsync/join/#abc123",
+  tracks: [
+    { id: 1, kind: "audio", title: "Surround", lang: "eng", selected: true, channels: 6, codec: "aac" },
+    { id: 2, kind: "audio", title: null, lang: "hin", selected: false, channels: 2, codec: "aac" },
+    { id: 1, kind: "subtitle", title: null, lang: "eng", selected: false, channels: null, codec: "subrip" },
+    { id: 2, kind: "subtitle", title: "SDH", lang: "eng", selected: false, channels: null, codec: "subrip" },
+  ],
 };
 
 beforeEach(() => {
@@ -71,6 +88,7 @@ beforeEach(() => {
   pendingUpdate = null;
   checkFails = false;
   askAnswer = true;
+  launchUrls = null;
   localStorage.clear();
 });
 
@@ -80,7 +98,7 @@ test("home: host a room, or join with a pasted code", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Host a room" }));
   expect(sent).toContainEqual({ type: "host" });
 
-  await userEvent.type(screen.getByLabelText("Invite code"), "  7b22696422  ");
+  await userEvent.type(screen.getByLabelText("Invite link"), "  7b22696422  ");
   await userEvent.click(screen.getByRole("button", { name: "Join" }));
   expect(sent).toContainEqual({ type: "join", code: "7b22696422" });
 });
@@ -196,9 +214,9 @@ test("settings: Back returns to the room", async () => {
   expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("The Odyssey");
 });
 
-test("End room asks first, and still works if the dialog can't be shown", async () => {
+test("End room (host alone) asks first, and still works if the dialog can't be shown", async () => {
   render(<App />);
-  await act(async () => emit(room));
+  await act(async () => emit({ ...room, peers: room.peers.slice(0, 1) }));
   askAnswer = false;
   await userEvent.click(screen.getByRole("button", { name: /End room/ }));
   expect(sent).not.toContainEqual({ type: "leave" });
@@ -211,4 +229,96 @@ test("End room asks first, and still works if the dialog can't be shown", async 
   askAnswer = new Error("dialog.message not allowed");
   await userEvent.click(screen.getByRole("button", { name: /End room/ }));
   await waitFor(() => expect(sent).toContainEqual({ type: "leave" }));
+});
+
+test("a host with friends leaves, handing the room over", async () => {
+  const { ask } = await import("@tauri-apps/plugin-dialog");
+  render(<App />);
+  await act(async () => emit(room));
+  await userEvent.click(screen.getByRole("button", { name: /Leave room/ }));
+  await waitFor(() => expect(sent).toContainEqual({ type: "leave" }));
+  expect(vi.mocked(ask).mock.calls.at(-1)![0]).toMatch(/Riya becomes the host/);
+});
+
+test("invite link: copies the link, and opening one joins", async () => {
+  launchUrls = ["watchsync://join/7b2269"];
+  render(<App />);
+  await waitFor(() => expect(sent).toContainEqual({ type: "join", code: "watchsync://join/7b2269" }));
+
+  await act(async () => emit(room));
+  await userEvent.click(screen.getByRole("button", { name: "Copy invite link" }));
+  expect(writeText).toHaveBeenCalledWith(room.invite_link);
+});
+
+test("invite link while in a room: asks, then leaves and joins the new one", async () => {
+  render(<App />);
+  await act(async () => emit({ ...room, is_host: false }));
+  sent.length = 0;
+  await act(async () => openUrl(["watchsync://join/feed01"]));
+  await waitFor(() =>
+    expect(sent).toEqual([{ type: "leave" }, { type: "join", code: "watchsync://join/feed01" }]),
+  );
+
+  sent.length = 0;
+  askAnswer = false;
+  await act(async () => openUrl(["watchsync://join/feed02"]));
+  await new Promise((r) => setTimeout(r, 50));
+  expect(sent).toEqual([]);
+});
+
+test("chat: send a message and a reaction; typing doesn't pause the movie", async () => {
+  render(<App />);
+  await act(async () =>
+    emit({
+      ...room,
+      chat: [
+        { from: "Riya", text: "popcorn ready?", reaction: null, mine: false, at_ms: 1 },
+        { from: "Aman", text: null, reaction: "laugh", mine: false, at_ms: 2 },
+      ],
+    }),
+  );
+  const feed = within(screen.getByRole("region", { name: "Chat" })).getAllByRole("listitem");
+  expect(feed[0]).toHaveTextContent("Riya popcorn ready?");
+  expect(feed[1]).toHaveTextContent("😂");
+  expect(feed[1]).toHaveTextContent("Aman");
+
+  const box = screen.getByRole("textbox", { name: "Message" });
+  await userEvent.type(box, "  yes! {Enter}");
+  expect(sent).toEqual([{ type: "chat", text: "yes!" }]);
+  expect(box).toHaveValue("");
+  await userEvent.type(box, " ");
+  expect(sent).not.toContainEqual({ type: "toggle_play" });
+
+  await userEvent.click(screen.getByRole("button", { name: "Fire" }));
+  expect(sent).toContainEqual({ type: "react", reaction: "fire" });
+});
+
+test("sound: pick tracks, and comfort settings are remembered", async () => {
+  const { unmount } = render(<App />);
+  await act(async () => emit(room));
+  const audio = screen.getByRole("combobox", { name: "Audio" });
+  expect(audio).toHaveDisplayValue("English, 5.1, Surround");
+  await userEvent.selectOptions(audio, "Hindi, stereo");
+  expect(sent).toContainEqual({ type: "set_track", kind: "audio", id: 2 });
+
+  const subs = screen.getByRole("combobox", { name: "Subtitles" });
+  expect(subs).toHaveDisplayValue("Off");
+  await userEvent.selectOptions(subs, "English, SDH");
+  expect(sent).toContainEqual({ type: "set_track", kind: "subtitle", id: 2 });
+
+  await userEvent.click(screen.getByRole("switch", { name: /Boost dialogue/ }));
+  expect(sent).toContainEqual({ type: "set_comfort", comfort: { level_volume: false, boost_dialogue: true } });
+
+  unmount();
+  sent.length = 0;
+  render(<App />);
+  await waitFor(() =>
+    expect(sent).toContainEqual({ type: "set_comfort", comfort: { level_volume: false, boost_dialogue: true } }),
+  );
+});
+
+test("shows that it's reconnecting, calmly", async () => {
+  render(<App />);
+  await act(async () => emit({ ...room, is_host: false, reconnecting: true }));
+  expect(screen.getByRole("status")).toHaveTextContent("Reconnecting to the room. Your movie keeps playing.");
 });

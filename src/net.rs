@@ -152,8 +152,32 @@ pub fn encode_code(addr: &EndpointAddr) -> String {
     hex::encode(serde_json::to_vec(addr).unwrap_or_default())
 }
 
+/// The web page that turns an invite link into `watchsync://join/<code>`.
+/// The code travels after `#`, so it never reaches a server.
+pub const INVITE_PAGE: &str = "https://actuallyakshat.github.io/watchsync/join/";
+
+/// The link friends tap to join.
+pub fn invite_link(code: &str) -> String {
+    format!("{INVITE_PAGE}#{code}")
+}
+
+/// Accept any way a friend might pass the invite on: the web link, the
+/// `watchsync://` link, or the bare code (with stray spaces or newlines).
+pub fn extract_code(input: &str) -> String {
+    let s = input.trim();
+    let s = match s.rfind('#') {
+        Some(i) => &s[i + 1..],
+        None => s
+            .strip_prefix("watchsync://join/")
+            .or_else(|| s.strip_prefix("watchsync://join?code="))
+            .or_else(|| s.strip_prefix("watchsync://"))
+            .unwrap_or(s),
+    };
+    s.chars().filter(|c| !c.is_whitespace() && *c != '/').collect()
+}
+
 pub fn decode_code(code: &str) -> Result<EndpointAddr> {
-    let cleaned: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    let cleaned = extract_code(code);
     let bytes = hex::decode(cleaned).map_err(|_| anyhow!("That doesn't look like a room code"))?;
     serde_json::from_slice(&bytes).map_err(|_| anyhow!("That doesn't look like a room code"))
 }
@@ -309,4 +333,35 @@ pub async fn join(
     let endpoint = bind().await?;
     let link = connect(&endpoint, code, 0, hello(&name, &endpoint), events).await?;
     Ok((endpoint, link))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invite_links_and_codes_all_work() {
+        let code = "7b2269";
+        for input in [
+            "7b2269",
+            "  7b2269\n",
+            "watchsync://join/7b2269",
+            "watchsync://join/7b2269/",
+            "watchsync://join?code=7b2269",
+            "https://actuallyakshat.github.io/watchsync/join/#7b2269",
+            "Join me! https://actuallyakshat.github.io/watchsync/join/#7b2269",
+            &invite_link(code),
+        ] {
+            assert_eq!(extract_code(input), code, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn an_invite_link_decodes_to_the_host() {
+        let secret = iroh::SecretKey::from_bytes(&[7u8; 32]);
+        let addr = EndpointAddr::from(secret.public());
+        let link = invite_link(&encode_code(&addr));
+        assert_eq!(decode_code(&link).unwrap().id, addr.id);
+        assert!(decode_code("https://example.com/#nothex").is_err());
+    }
 }

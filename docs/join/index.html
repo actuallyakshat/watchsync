@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Join a WatchSync room</title>
+<meta name="description" content="You're invited to watch a movie together in sync.">
+<meta name="robots" content="noindex">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #fafaf8; --surface: #ffffff; --well: #f1f1ee; --ink: #18181b; --ink-2: #3f3f46;
+    --muted: #686873; --line: #e6e6e9; --signal: #624def;
+    --sans: "Geist", system-ui, -apple-system, sans-serif;
+    --serif: "Instrument Serif", "New York", Georgia, serif;
+    --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { color-scheme: dark; --page: #161618; --surface: #1c1c1f; --well: #26262a; --ink: #ececee;
+      --ink-2: #c4c4cb; --muted: #91919c; --line: #2e2e33; --signal: #9d8cff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--page);
+    color: var(--ink); font: 15px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+  main { width: min(520px, calc(100% - 48px)); padding: 48px 0; }
+  .brand { display: flex; align-items: center; gap: 9px; font-family: var(--serif); font-size: 22px; }
+  h1 { margin: 36px 0 0; font-family: var(--serif); font-weight: 400; font-size: 46px; line-height: 1.04;
+    letter-spacing: -0.015em; }
+  p { margin: 14px 0 0; color: var(--muted); max-width: 44ch; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  a.primary, button { font: inherit; font-size: 14px; border-radius: 6px; cursor: pointer; text-decoration: none; }
+  a.primary { padding: 8px 18px; background: var(--ink); color: var(--page); font-weight: 500; }
+  button { padding: 7px 14px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); }
+  .install { margin-top: 40px; padding-top: 22px; border-top: 1px solid var(--line); }
+  .install h2 { margin: 0; font-size: 13px; font-weight: 600; }
+  code { display: block; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--well); font: 12px/1.5 var(--mono); color: var(--ink-2); word-break: break-all; }
+  .bad { color: #bf392b; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">
+    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 5.6c0-1 1-1.6 1.9-1.1l8.4 5.1c.8.5.8 1.7 0 2.2l-8.4 5.1C5 17.4 4 16.8 4 15.8z" fill="currentColor" opacity=".3"/>
+      <path d="M9 5.6c0-1 1-1.6 1.9-1.1l8.4 5.1c.8.5.8 1.7 0 2.2l-8.4 5.1c-.9.5-1.9-.1-1.9-1.1z" fill="currentColor"/>
+    </svg>
+    WatchSync
+  </div>
+  <h1 id="title">You're invited to movie night.</h1>
+  <p id="lede">Opening WatchSync… If nothing happens, click the button below.</p>
+  <div class="actions" id="actions">
+    <a class="primary" id="open" href="#">Open in WatchSync</a>
+    <button id="copy" type="button">Copy invite code</button>
+  </div>
+  <section class="install">
+    <h2>Don't have WatchSync yet?</h2>
+    <p>It's free for macOS. Paste this into Terminal, then come back and click Open in WatchSync:</p>
+    <code>brew install --cask actuallyakshat/tap/watchsync</code>
+    <p>No Homebrew? See <a href="https://github.com/actuallyakshat/watchsync#install">the install guide</a>.</p>
+  </section>
+</main>
+<script>
+  // The invite code is after "#", so it never leaves this browser.
+  const code = decodeURIComponent(location.hash.slice(1)).replace(/\s+/g, "");
+  const open = document.getElementById("open");
+  if (!/^[0-9a-f]{16,}$/i.test(code)) {
+    document.getElementById("title").textContent = "This invite link is incomplete.";
+    document.getElementById("lede").innerHTML = '<span class="bad">Ask your friend to copy the invite again from WatchSync.</span>';
+    document.getElementById("actions").remove();
+  } else {
+    const app = "watchsync://join/" + code;
+    open.href = app;
+    location.href = app;
+    document.getElementById("copy").addEventListener("click", async (e) => {
+      await navigator.clipboard.writeText(code);
+      e.target.textContent = "Copied";
+    });
+  }
+</script>
+</body>
+</html>

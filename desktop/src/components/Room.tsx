@@ -1,7 +1,8 @@
 import { useRef } from "react";
-import type { Crop, Snapshot } from "../api";
+import type { Comfort, Crop, Snapshot, TrackKind } from "../api";
 import { formatTime, frameSize, movieTitle } from "../format";
 import { PauseIcon, PlayIcon, Skip10 } from "./Icons";
+import { Sound } from "./Sound";
 
 /** Tallest to widest. Must match `Crop::ALL` in src/sync.rs. */
 export const CROPS: { id: Crop; label: string; aspect: number | null; imax?: boolean }[] = [
@@ -25,9 +26,11 @@ interface Props {
   onSeekBy: (seconds: number) => void;
   onSeekTo: (position: number) => void;
   onCrop: (crop: Crop) => void;
+  onTrack: (kind: TrackKind, id: number | null) => void;
+  onComfort: (c: Comfort) => void;
 }
 
-export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop }: Props) {
+export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop, onTrack, onComfort }: Props) {
   const host = snap.peers.find((p) => p.is_host);
 
   return (
@@ -68,6 +71,14 @@ export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop }: P
           })}
         </div>
       </section>
+
+      <Sound
+        tracks={snap.tracks}
+        comfort={snap.comfort}
+        playerOpen={snap.player_open}
+        onTrack={onTrack}
+        onComfort={onComfort}
+      />
     </>
   );
 }

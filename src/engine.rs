@@ -154,6 +154,8 @@ pub struct Snapshot {
     /// Audio and subtitle tracks in this person's file.
     pub tracks: Vec<Track>,
     pub comfort: Comfort,
+    /// The link to share (only the host has a working one).
+    pub invite_link: Option<String>,
 }
 
 enum Role {
@@ -389,7 +391,7 @@ impl Engine {
             UiCmd::Join { code } if self.phase == Phase::Home => {
                 self.phase = Phase::Connecting;
                 self.publish();
-                let code = code.trim().to_string();
+                let code = net::extract_code(&code);
                 let attempt = async {
                     let endpoint = net::bind().await?;
                     let hello = net::hello(&self.name, &endpoint);
@@ -1329,6 +1331,7 @@ impl Engine {
             chat: self.chat.clone(),
             tracks: self.tracks.clone(),
             comfort: self.comfort,
+            invite_link: self.code.as_deref().filter(|_| self.is_host()).map(net::invite_link),
         };
         // Bounded(1) channel: replace any snapshot the UI hasn't drawn yet.
         let _ = self.ui.force_send(snapshot);
