@@ -828,3 +828,70 @@ ul {
   margin-top: 12px;
   color: var(--s-blocked);
 }
+
+/* ---------- settings ---------- */
+
+.page-title {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 44px;
+  line-height: 1.04;
+  letter-spacing: -0.015em;
+  margin-bottom: 18px;
+}
+
+.setting {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+
+.setting-text {
+  max-width: 40ch;
+}
+
+.setting-text h2 {
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.setting-text p {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.setting-control {
+  flex: none;
+}
+
+.setting-control.join {
+  width: 280px;
+}
+
+.name-input {
+  font-family: var(--sans) !important;
+  font-size: 13px !important;
+}
+
+.setting-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2) !important;
+}
+
+.setting-status .bad {
+  color: var(--s-blocked);
+}
+
+.signal-text {
+  color: var(--signal);
+}
+
+.foot-link.on {
+  background: rgb(var(--tint) / 0.07);
+  color: var(--ink);
+}

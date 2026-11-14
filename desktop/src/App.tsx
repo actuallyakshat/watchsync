@@ -7,7 +7,9 @@ import { Sidebar } from "./components/Sidebar";
 import { Home } from "./components/Home";
 import { Room } from "./components/Room";
 import { Setup } from "./components/Setup";
-import { LeaveIcon } from "./components/Icons";
+import { Settings } from "./components/Settings";
+import { BackIcon, LeaveIcon } from "./components/Icons";
+import { saveName, savedName } from "./name";
 import { useUpdater } from "./update";
 
 const VIDEO_EXTENSIONS = ["mkv", "mp4", "m4v", "mov", "avi", "webm", "ts", "wmv", "flv", "mpg", "mpeg"];
@@ -16,10 +18,13 @@ export function App() {
   const [snap, setSnap] = useState<Snapshot>(EMPTY);
   const [setup, setSetup] = useState<PlayerSetup | null>(null);
   const [version, setVersion] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const updater = useUpdater();
 
   useEffect(() => {
     const unlisten = onSnapshot(setSnap);
+    const name = savedName();
+    if (name) void send({ type: "set_name", name });
     void getVersion().then(setVersion);
     void playerSetup().then(setSetup);
     return () => void unlisten.then((f) => f());
@@ -36,16 +41,16 @@ export function App() {
   }, []);
 
   const leave = useCallback(async () => {
-    const ok = await ask(
+    const ok = await confirmOr(
       snap.is_host ? "You're the host, so this ends the room for everyone." : "You can rejoin with the same invite code.",
-      { title: "Leave the room?", okLabel: "Leave", cancelLabel: "Stay", kind: "warning" },
+      { title: snap.is_host ? "End the room?" : "Leave the room?", okLabel: snap.is_host ? "End room" : "Leave", cancelLabel: "Stay", kind: "warning" },
     );
     if (ok) void send({ type: "leave" });
   }, [snap.is_host]);
 
   const runUpdate = useCallback(async () => {
     if (snap.phase === "room") {
-      const ok = await ask(
+      const ok = await confirmOr(
         snap.is_host
           ? "WatchSync restarts to update. You're the host, so the room ends for everyone."
           : "WatchSync restarts to update. Rejoin with the same invite code afterwards.",
@@ -71,6 +76,11 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [snap.phase, snap.player_open]);
 
+  const rename = useCallback((name: string) => {
+    saveName(name);
+    void send({ type: "set_name", name });
+  }, []);
+
   const needsPlayer = setup !== null && !setup.installed;
 
   return (
@@ -83,11 +93,19 @@ export function App() {
           if (snap.code) await writeText(snap.code);
         }}
         onUpdate={runUpdate}
-        onCheck={() => void updater.checkNow()}
+        settingsOpen={settingsOpen}
+        onSettings={() => setSettingsOpen((o) => !o)}
       />
       <main className="main">
         <div className="drag topbar" data-tauri-drag-region>
-          {snap.phase === "room" && (
+          {settingsOpen ? (
+            <button className="ghost" onClick={() => setSettingsOpen(false)}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <BackIcon />
+                {snap.phase === "room" ? "Back to the room" : "Back"}
+              </span>
+            </button>
+          ) : snap.phase === "room" && (
             <button className="ghost" onClick={leave}>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                 <LeaveIcon />
@@ -98,7 +116,16 @@ export function App() {
         </div>
         <div className="content">
           {snap.error && <div className="banner" role="alert">{snap.error}</div>}
-          {needsPlayer ? (
+          {settingsOpen ? (
+            <Settings
+              name={snap.name}
+              version={version}
+              update={updater.state}
+              onRename={rename}
+              onCheck={() => void updater.checkNow()}
+              onUpdate={runUpdate}
+            />
+          ) : needsPlayer ? (
             <Setup setup={setup} onRecheck={() => void playerSetup().then(setSetup)} onCopy={(t) => writeText(t)} />
           ) : snap.phase === "room" ? (
             <Room
@@ -120,4 +147,17 @@ export function App() {
       </main>
     </div>
   );
+}
+
+/**
+ * Ask for confirmation. If the dialog can't be shown, go ahead rather than
+ * leave a button that silently does nothing.
+ */
+async function confirmOr(message: string, options: Parameters<typeof ask>[1]): Promise<boolean> {
+  try {
+    return await ask(message, options);
+  } catch (e) {
+    console.error("confirmation dialog failed", e);
+    return true;
+  }
 }

@@ -68,9 +68,16 @@ export const ArrowUpIcon = () => (
   </svg>
 );
 
-export const RefreshIcon = () => (
+export const GearIcon = () => (
   <svg {...base}>
-    <path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3" />
+    <circle cx="8" cy="8" r="2.2" />
+    <path d="M8 1.8v1.6M8 12.6v1.6M14.2 8h-1.6M3.4 8H1.8M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1M12.4 12.4l-1.1-1.1M4.7 4.7 3.6 3.6" />
+  </svg>
+);
+
+export const BackIcon = () => (
+  <svg {...base}>
+    <path d="M10 3.5 5.5 8l4.5 4.5" />
   </svg>
 );
 

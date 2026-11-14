@@ -56,6 +56,7 @@ export type Command =
   | { type: "seek_by"; seconds: number }
   | { type: "seek_to"; position: number }
   | { type: "set_crop"; crop: Crop }
+  | { type: "set_name"; name: string }
   | { type: "leave" };
 
 export interface PlayerSetup {

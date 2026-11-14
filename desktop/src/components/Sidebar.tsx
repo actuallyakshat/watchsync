@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Person, Snapshot } from "../api";
 import { formatDrift } from "../format";
 import type { UpdateState } from "../update";
-import { ArrowUpIcon, CheckIcon, CopyIcon, Mark, RefreshIcon } from "./Icons";
+import { ArrowUpIcon, CheckIcon, CopyIcon, GearIcon, Mark } from "./Icons";
 
 interface Props {
   snap: Snapshot;
@@ -10,10 +10,11 @@ interface Props {
   update: UpdateState;
   onCopyCode: () => Promise<void>;
   onUpdate: () => void;
-  onCheck: () => void;
+  settingsOpen: boolean;
+  onSettings: () => void;
 }
 
-export function Sidebar({ snap, version, update, onCopyCode, onUpdate, onCheck }: Props) {
+export function Sidebar({ snap, version, update, onCopyCode, onUpdate, settingsOpen, onSettings }: Props) {
   const [copied, setCopied] = useState(false);
   const inRoom = snap.phase === "room";
 
@@ -49,7 +50,11 @@ export function Sidebar({ snap, version, update, onCopyCode, onUpdate, onCheck }
             {copied ? "Copied. Send it to friends" : "Copy invite code"}
           </button>
         )}
-        <UpdateLink state={update} onUpdate={onUpdate} onCheck={onCheck} />
+        <UpdateLink state={update} onUpdate={onUpdate} />
+        <button className={`foot-link ${settingsOpen ? "on" : ""}`} onClick={onSettings} aria-pressed={settingsOpen}>
+          <GearIcon />
+          Settings
+        </button>
         <div className="version mono">WatchSync {version}</div>
       </div>
     </nav>
@@ -83,7 +88,8 @@ function PersonRow({ person: p }: { person: Person }) {
   );
 }
 
-function UpdateLink({ state, onUpdate, onCheck }: { state: UpdateState; onUpdate: () => void; onCheck: () => void }) {
+/** Only shown when there's something to do; checking lives in Settings. */
+function UpdateLink({ state, onUpdate }: { state: UpdateState; onUpdate: () => void }) {
   switch (state.kind) {
     case "available":
       return (
@@ -107,33 +113,7 @@ function UpdateLink({ state, onUpdate, onCheck }: { state: UpdateState; onUpdate
           Update failed. Try again
         </button>
       );
-    case "checking":
-      return (
-        <div className="foot-link" aria-live="polite">
-          <span className="spinner" />
-          Checking for updates…
-        </div>
-      );
-    case "latest":
-      return (
-        <div className="foot-link" aria-live="polite">
-          <CheckIcon />
-          You're up to date
-        </div>
-      );
-    case "check_failed":
-      return (
-        <button className="foot-link" onClick={onCheck} title="Check your internet connection">
-          <RefreshIcon />
-          Couldn't check. Try again
-        </button>
-      );
     default:
-      return (
-        <button className="foot-link" onClick={onCheck}>
-          <RefreshIcon />
-          Check for updates
-        </button>
-      );
+      return null;
   }
 }

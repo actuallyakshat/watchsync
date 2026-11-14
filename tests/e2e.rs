@@ -235,4 +235,21 @@ fn watch_party() {
         "crop should be cleared everywhere"
     );
     host.wait("three people listed", 5, |s| s.peers.len() == 3);
+
+    // --- Renames show up for everyone, live ---------------------------------
+    guest.send(UiCmd::SetName { name: "  Riya K  ".into() });
+    host.wait("host sees guest's new name", 5, |s| {
+        s.peers.iter().any(|p| p.name == "Riya K") && !s.peers.iter().any(|p| p.name == "Riya")
+    });
+    host.send(UiCmd::SetName { name: "Akshat".into() });
+    late.wait("guest sees host's new name", 5, |s| {
+        s.peers.iter().any(|p| p.is_host && p.name == "Akshat")
+    });
+    assert!(!paused(&hs) && !paused(&gs), "renaming must not interrupt playback");
+
+    // --- Leaving: the host notices quickly ----------------------------------
+    guest.send(UiCmd::Leave);
+    let s = guest.wait("guest back home", 5, |s| s.phase == Phase::Home && !s.player_open);
+    assert!(s.peers.is_empty());
+    host.wait("host sees guest leave", 10, |s| s.peers.len() == 2);
 }

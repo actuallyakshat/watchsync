@@ -58,6 +58,8 @@ pub enum Msg {
     Peers(Vec<PeerInfo>),
     /// host → all: the room's picture crop and who chose it.
     Crop { crop: Crop, by: String },
+    /// guest → host: "call me this now".
+    Rename { name: String },
 }
 
 #[derive(Debug)]

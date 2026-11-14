@@ -28,6 +28,7 @@ pub enum UiCmd {
     SeekBy { seconds: f64 },
     SeekTo { position: f64 },
     SetCrop { crop: Crop },
+    SetName { name: String },
     Leave,
 }
 
@@ -102,6 +103,9 @@ struct Peer {
     drift_ms: Option<f64>,
     version: String,
 }
+
+/// Longest display name, in characters.
+pub const MAX_NAME: usize = 32;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -300,7 +304,8 @@ impl Engine {
                     self.submit(Intent::SetCrop { crop }).await;
                 }
             }
-            UiCmd::Leave => self.leave(),
+            UiCmd::SetName { name } => self.rename(name).await,
+            UiCmd::Leave => self.leave().await,
             _ => {}
         }
     }
@@ -313,10 +318,28 @@ impl Engine {
         self.submit(Intent::Seek { position }).await;
     }
 
+    /// Change this person's display name, live if they're in a room.
+    async fn rename(&mut self, name: String) {
+        let name: String = name.trim().chars().take(MAX_NAME).collect();
+        if name.is_empty() || name == self.name {
+            return;
+        }
+        self.name = name.clone();
+        if self.is_host() {
+            self.refresh_peers();
+        } else if let Role::Guest { tx } = &self.role {
+            let _ = tx.send(Msg::Rename { name });
+        }
+    }
+
     /// Leave the room and close the player. (Hosting ends the room.)
-    fn leave(&mut self) {
+    async fn leave(&mut self) {
         self.role = Role::None;
-        self._endpoint = None;
+        // Close properly so the others see us leave right away instead of
+        // after a network timeout.
+        if let Some(endpoint) = self._endpoint.take() {
+            tokio::spawn(async move { endpoint.close().await });
+        }
         self.code = None;
         self.phase = Phase::Home;
         self.room_peers.clear();
@@ -698,6 +721,13 @@ impl Engine {
                 });
                 self.osd(&format!("{name} joined")).await;
                 self.refresh_peers();
+            }
+            Msg::Rename { name } => {
+                let name: String = name.trim().chars().take(MAX_NAME).collect();
+                if !name.is_empty() {
+                    peer.name = name;
+                    self.refresh_peers();
+                }
             }
             Msg::Ping { t0 } => {
                 let _ = peer.tx.send(Msg::Pong {

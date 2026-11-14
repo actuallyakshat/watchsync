@@ -24,7 +24,14 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "0.2.0" }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => "/Movies/film.mkv"), ask: vi.fn(async () => true) }));
+let askAnswer: boolean | Error = true;
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(async () => "/Movies/film.mkv"),
+  ask: vi.fn(async () => {
+    if (askAnswer instanceof Error) throw askAnswer;
+    return askAnswer;
+  }),
+}));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn(async () => {}) }));
 let checkFails = false;
 vi.mock("@tauri-apps/plugin-updater", () => ({
@@ -63,6 +70,8 @@ beforeEach(() => {
   setup = { installed: true, has_brew: true };
   pendingUpdate = null;
   checkFails = false;
+  askAnswer = true;
+  localStorage.clear();
 });
 
 test("home: host a room, or join with a pasted code", async () => {
@@ -131,28 +140,75 @@ test("offers an available update", async () => {
   await waitFor(() => expect(install).toHaveBeenCalled());
 });
 
-test("check for updates: up to date, then a new release appears", async () => {
+const openSettings = async () => {
+  await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+};
+
+test("settings: check for updates, up to date, then a new release appears", async () => {
   render(<App />);
-  const button = await screen.findByRole("button", { name: "Check for updates" });
-  await userEvent.click(button);
+  await openSettings();
+  await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
   expect(await screen.findByText("You're up to date")).toBeInTheDocument();
 
   pendingUpdate = { version: "0.3.0", downloadAndInstall: vi.fn(async () => {}) };
-  await waitFor(() => expect(screen.getByRole("button", { name: "Check for updates" })).toBeInTheDocument(), {
-    timeout: 6000,
-  });
   await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
-  expect(await screen.findByRole("button", { name: /Update to 0\.3\.0/ })).toBeInTheDocument();
-}, 10000);
+  // Offered in Settings, and announced in the sidebar too.
+  expect(await screen.findAllByRole("button", { name: /Update to 0\.3\.0/ })).toHaveLength(2);
+});
 
-test("check for updates: says so when offline, and can retry", async () => {
+test("settings: says so when offline, and can retry", async () => {
   checkFails = true;
   render(<App />);
-  // The automatic check at launch fails quietly: the button is still there.
-  await userEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
-  const retry = await screen.findByRole("button", { name: "Couldn't check. Try again" });
-
+  await openSettings();
+  await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+  expect(await screen.findByText(/Couldn't reach GitHub/)).toBeInTheDocument();
   checkFails = false;
-  await userEvent.click(retry);
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(await screen.findByText("You're up to date")).toBeInTheDocument();
+});
+
+test("settings: set a display name, remembered for next time", async () => {
+  const { unmount } = render(<App />);
+  await act(async () => emit({ ...EMPTY, name: "Akshat Dubey" }));
+  await openSettings();
+  const input = screen.getByRole("textbox", { name: "Display name" });
+  expect(input).toHaveValue("Akshat Dubey");
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+  await userEvent.clear(input);
+  await userEvent.type(input, "  Akshat  ");
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(sent).toContainEqual({ type: "set_name", name: "Akshat" });
+
+  // Next launch: the saved name is sent to the engine straight away.
+  unmount();
+  sent.length = 0;
+  render(<App />);
+  await waitFor(() => expect(sent).toContainEqual({ type: "set_name", name: "Akshat" }));
+});
+
+test("settings: Back returns to the room", async () => {
+  render(<App />);
+  await act(async () => emit(room));
+  await openSettings();
+  await userEvent.click(screen.getByRole("button", { name: /Back to the room/ }));
+  expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("The Odyssey");
+});
+
+test("End room asks first, and still works if the dialog can't be shown", async () => {
+  render(<App />);
+  await act(async () => emit(room));
+  askAnswer = false;
+  await userEvent.click(screen.getByRole("button", { name: /End room/ }));
+  expect(sent).not.toContainEqual({ type: "leave" });
+
+  askAnswer = true;
+  await userEvent.click(screen.getByRole("button", { name: /End room/ }));
+  await waitFor(() => expect(sent).toContainEqual({ type: "leave" }));
+
+  sent.length = 0;
+  askAnswer = new Error("dialog.message not allowed");
+  await userEvent.click(screen.getByRole("button", { name: /End room/ }));
+  await waitFor(() => expect(sent).toContainEqual({ type: "leave" }));
 });
