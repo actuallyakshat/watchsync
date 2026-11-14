@@ -1,0 +1,122 @@
+//! The mpv controller against a real (headless) mpv.
+
+mod common;
+
+use common::*;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use watchsync::mpv::{Mpv, MpvEvent};
+
+async fn launch(start: f64) -> (Mpv, mpsc::UnboundedReceiver<MpvEvent>) {
+    headless();
+    let (tx, rx) = mpsc::unbounded_channel();
+    let mpv = Mpv::launch(&clip(), start, tx).await.expect("launch mpv");
+    (mpv, rx)
+}
+
+/// time-pos is only available once the file has loaded.
+async fn loaded_pos(mpv: &Mpv) -> f64 {
+    for _ in 0..50 {
+        if let Ok(p) = mpv.time_pos().await {
+            return p;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("file never loaded");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn starts_paused_at_the_requested_position() {
+    let (mpv, _rx) = launch(30.0).await;
+    let pos = loaded_pos(&mpv).await;
+    assert!((pos - 30.0).abs() < 0.1, "pos {pos}");
+    assert!(paused(mpv.socket()));
+    let duration = mpv.duration().await.unwrap();
+    assert!((duration - CLIP_SECS).abs() < 1.0, "duration {duration}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plays_in_real_time_and_pauses() {
+    let (mpv, _rx) = launch(10.0).await;
+    loaded_pos(&mpv).await;
+    mpv.set_pause(false).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    mpv.set_pause(true).await.unwrap();
+    let pos = mpv.time_pos().await.unwrap();
+    assert!((pos - 12.0).abs() < 0.3, "after 2s of play pos is {pos}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let still = mpv.time_pos().await.unwrap();
+    assert!((still - pos).abs() < 0.01, "moved while paused: {pos} -> {still}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn seeks_are_frame_exact() {
+    let (mpv, _rx) = launch(0.0).await;
+    loaded_pos(&mpv).await;
+    // 123.45s is between keyframes (every 2s) and between frames.
+    mpv.seek(123.45).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let pos = mpv.time_pos().await.unwrap();
+    assert!((pos - 123.45).abs() < 1.0 / 24.0, "pos {pos}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sets_speed() {
+    let (mpv, _rx) = launch(0.0).await;
+    loaded_pos(&mpv).await;
+    mpv.set_speed(1.05).await.unwrap();
+    let speed = ipc(mpv.socket(), serde_json::json!(["get_property", "speed"]));
+    assert_eq!(speed.as_f64(), Some(1.05));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reports_user_pause_and_seek() {
+    let (mpv, mut rx) = launch(0.0).await;
+    loaded_pos(&mpv).await;
+
+    // The user presses space in the mpv window. (The initial Pause(true)
+    // from observing the property may still be in flight, so skip past it.)
+    ipc(mpv.socket(), serde_json::json!(["set_property", "pause", false]));
+    let got_unpause = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(ev) = rx.recv().await {
+            if matches!(ev, MpvEvent::Pause(false)) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(got_unpause, Ok(true));
+
+    // The user seeks with the arrow keys.
+    ipc(mpv.socket(), serde_json::json!(["seek", 60, "absolute"]));
+    let got_restart = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(ev) = rx.recv().await {
+            if matches!(ev, MpvEvent::PlaybackRestart) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(got_restart, Ok(true));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reports_exit_when_the_player_goes_away() {
+    let (mpv, mut rx) = launch(0.0).await;
+    loaded_pos(&mpv).await;
+    let socket = mpv.socket().to_path_buf();
+    drop(mpv); // kills the process
+    let exited = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(ev) = rx.recv().await {
+            if matches!(ev, MpvEvent::Exited) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(exited, Ok(true));
+    assert!(std::os::unix::net::UnixStream::connect(socket).is_err());
+}
