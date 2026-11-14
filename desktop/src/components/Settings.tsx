@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { cleanName, MAX_NAME } from "../name";
+import type { PlayerSetup } from "../api";
 import type { UpdateState } from "../update";
 import { CheckIcon } from "./Icons";
 
@@ -10,13 +11,16 @@ interface Props {
   onRename: (name: string) => void;
   onCheck: () => void;
   onUpdate: () => void;
+  setup: PlayerSetup | null;
+  onInstallHelpers: () => Promise<void>;
 }
 
-export function Settings({ name, version, update, onRename, onCheck, onUpdate }: Props) {
+export function Settings({ name, version, update, onRename, onCheck, onUpdate, setup, onInstallHelpers }: Props) {
   return (
     <div className="settings">
       <h1 className="page-title">Settings</h1>
       <NameSection name={name} onRename={onRename} />
+      {setup && <HelpersSection setup={setup} onInstall={onInstallHelpers} />}
       <UpdatesSection version={version} update={update} onCheck={onCheck} onUpdate={onUpdate} />
     </div>
   );
@@ -145,6 +149,60 @@ function UpdatesSection({
         )}
       </div>
       <div className="setting-control">{action}</div>
+    </section>
+  );
+}
+
+/** mpv and croc, which WatchSync uses under the hood. */
+function HelpersSection({ setup, onInstall }: { setup: PlayerSetup; onInstall: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const missing = [!setup.installed && "mpv", !setup.croc && "croc"].filter(Boolean) as string[];
+
+  const install = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onInstall();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="setting" aria-labelledby="helpers-head">
+      <div className="setting-text">
+        <h2 id="helpers-head">Helper apps</h2>
+        <ul className="helpers">
+          <li>
+            <span className={`person-dot ${setup.installed ? "match" : "mismatch"}`} />
+            mpv plays the movie {setup.installed ? "" : "(not installed)"}
+          </li>
+          <li>
+            <span className={`person-dot ${setup.croc ? "match" : "mismatch"}`} />
+            croc sends movies to friends {setup.croc ? "" : "(not installed)"}
+          </li>
+        </ul>
+        {missing.length > 0 && !setup.has_brew && (
+          <p>Install with Homebrew in Terminal: brew install {missing.join(" ")}</p>
+        )}
+        {error && <p className="error-text">{error}</p>}
+      </div>
+      <div className="setting-control">
+        {missing.length === 0 ? (
+          <span className="setting-status">
+            <CheckIcon /> All set
+          </span>
+        ) : (
+          setup.has_brew && (
+            <button className="primary" onClick={install} disabled={busy}>
+              {busy ? "Installing…" : `Install ${missing.join(" and ")}`}
+            </button>
+          )
+        )}
+      </div>
     </section>
   );
 }

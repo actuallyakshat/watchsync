@@ -1221,3 +1221,16 @@ ul {
 .transfer-detail.bad {
   color: var(--s-blocked);
 }
+
+.helpers {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  color: var(--ink-2);
+}
+
+.helpers li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}

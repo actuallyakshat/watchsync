@@ -6363,6 +6363,7 @@ dependencies = [
 name = "watchsync-desktop"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
  "async-channel",
  "serde",
  "serde_json",

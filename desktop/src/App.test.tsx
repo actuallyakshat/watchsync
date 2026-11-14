@@ -413,3 +413,21 @@ test("movie file: failed downloads say why and can be retried", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(sent).toContainEqual({ type: "get_file", offer_id: "o1" });
 });
+
+test("one-time setup installs both helper apps", async () => {
+  setup = { installed: false, has_brew: false, croc: false };
+  render(<App />);
+  expect(await screen.findByText(/mpv, the video player, and croc/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Copy command" }));
+  expect(writeText).toHaveBeenLastCalledWith(expect.stringMatching(/brew install mpv croc$/));
+});
+
+test("settings: helper apps, with a one-click install for what's missing", async () => {
+  setup = { installed: true, has_brew: true, croc: false };
+  render(<App />);
+  await openSettings();
+  expect(screen.getByText(/croc sends movies to friends \(not installed\)/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Install croc" }));
+  const { invoke } = await import("@tauri-apps/api/core");
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("install_player"));
+});

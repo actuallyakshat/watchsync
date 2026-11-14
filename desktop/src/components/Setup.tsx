@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { installPlayer, type PlayerSetup } from "../api";
 
-/** Installs Homebrew and mpv, for pasting into Terminal. */
+/** Installs Homebrew, mpv and croc, for pasting into Terminal. */
 export const INSTALL_COMMAND =
-  '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" && eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)" && brew install mpv';
+  '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" && eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)" && brew install mpv croc';
 
 interface Props {
   setup: PlayerSetup;
@@ -34,20 +34,21 @@ export function Setup({ setup, onRecheck, onCopy }: Props) {
     <div className="home">
       <h1>One more thing.</h1>
       <p className="lede">
-        WatchSync plays movies in mpv, a free video player, and it isn't on this Mac yet. You only do this once.
+        WatchSync needs two free helper apps: mpv, the video player, and croc, for sending movies to friends.
+        You only do this once.
       </p>
       {setup.has_brew ? (
         <div className="row-actions">
           <button className="primary" onClick={install} disabled={busy}>
-            {busy ? "Installing mpv…" : "Install mpv"}
+            {busy ? "Installing mpv and croc…" : "Install mpv and croc"}
           </button>
           {busy && <span className="connecting"><span className="spinner" />This takes a minute or two.</span>}
         </div>
       ) : (
         <>
           <p className="lede">
-            Copy this command, paste it into the Terminal app and press Return. It installs Homebrew and then mpv, and asks
-            for your Mac password.
+            Copy this command, paste it into the Terminal app and press Return. It installs Homebrew, then mpv and croc,
+            and asks for your Mac password.
           </p>
           <div className="command">{INSTALL_COMMAND}</div>
           <div className="row-actions">

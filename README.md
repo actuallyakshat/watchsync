@@ -18,8 +18,8 @@ No Homebrew? Paste this into Terminal (installs Homebrew, then WatchSync):
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/actuallyakshat/watchsync/main/scripts/install.sh)"
 ```
 
-Both also install mpv, the video player WatchSync uses, and open without a
-security warning. Update with `brew upgrade --cask watchsync`.
+Both also install WatchSync's helper apps, mpv (the video player) and croc
+(for sending movies), and open without a security warning. Update with `brew upgrade --cask watchsync`.
 
 ## Features
 

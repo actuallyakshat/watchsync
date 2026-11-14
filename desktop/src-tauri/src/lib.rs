@@ -45,13 +45,22 @@ async fn install_croc() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// `brew install mpv`. Takes a minute or two.
+/// `brew install mpv croc` (whatever's missing). Takes a minute or two.
 #[tauri::command]
 async fn install_player() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(mpv::install_with_brew)
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    // Batteries included: the player, plus croc for sending movies.
+    tauri::async_runtime::spawn_blocking(|| {
+        if !mpv::is_installed() {
+            mpv::install_with_brew()?;
+        }
+        if !share::is_installed() {
+            share::install_with_brew()?;
+        }
+        anyhow::Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 /// The Mac's full user name ("Akshat Dubey"), falling back to $USER.
