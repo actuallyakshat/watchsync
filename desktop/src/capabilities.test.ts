@@ -7,19 +7,24 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-const cap = JSON.parse(readFileSync(join(here, "../src-tauri/capabilities/default.json"), "utf8"));
-const granted: string[] = cap.permissions;
+const capability = (name: string) => JSON.parse(readFileSync(join(here, `../src-tauri/capabilities/${name}.json`), "utf8"));
 
-function sources(dir: string): string {
+function sources(dir: string, skip: string[] = []): string {
   return readdirSync(dir, { withFileTypes: true })
     .map((e) => {
       const p = join(dir, e.name);
-      if (e.isDirectory()) return e.name === "test" ? "" : sources(p);
+      if (e.isDirectory()) return e.name === "test" || skip.includes(e.name) ? "" : sources(p);
       return /\.tsx?$/.test(e.name) && !/\.test\./.test(e.name) ? readFileSync(p, "utf8") : "";
     })
     .join("\n");
 }
-const code = sources(here);
+
+// The main window runs everything but src/call; the call window runs
+// src/call (and the shared modules it imports, which only use core APIs).
+const windows: { label: string; code: string; granted: string[] }[] = [
+  { label: "main", code: sources(here, ["call"]), granted: capability("default").permissions },
+  { label: "call", code: sources(join(here, "call")), granted: capability("call").permissions },
+];
 
 // API used → permissions that would allow it.
 const needs: [RegExp, string[]][] = [
@@ -32,9 +37,21 @@ const needs: [RegExp, string[]][] = [
   [/data-tauri-drag-region/, ["core:window:allow-start-dragging"]],
   [/\bgetCurrent\(\)/, ["deep-link:default", "deep-link:allow-get-current"]],
   [/\bonOpenUrl\(/, ["core:default", "core:event:default"]],
+  [/\bstartResizeDragging\(/, ["core:window:allow-start-resize-dragging"]],
+  [/\.setSize\(/, ["core:window:allow-set-size"]],
+  [/\.setPosition\(/, ["core:window:allow-set-position"]],
+  [/\bonResized\(/, ["core:default", "core:window:default"]],
+  [/\blisten\(/, ["core:default", "core:event:default"]],
 ];
 
-test.each(needs)("UI uses %s, so the window is allowed to", (pattern, perms) => {
-  if (!pattern.test(code)) return;
-  expect(perms.some((p) => granted.includes(p))).toBe(true);
+for (const w of windows) {
+  test.each(needs)(`${w.label} window uses %s, so it is allowed to`, (pattern, perms) => {
+    if (!pattern.test(w.code)) return;
+    expect(perms.some((p) => w.granted.includes(p))).toBe(true);
+  });
+}
+
+test("each capability file is for the window it's named after", () => {
+  expect(capability("default").windows).toEqual(["main"]);
+  expect(capability("call").windows).toEqual(["call"]);
 });

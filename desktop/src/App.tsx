@@ -3,7 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { open, ask } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { EMPTY, installCroc, installPlayer, onSnapshot, playerSetup, send, type Comfort, type PlayerSetup, type Snapshot } from "./api";
+import { EMPTY, installCroc, installPlayer, onSnapshot, playerSetup, send, showCall, type Comfort, type PlayerSetup, type Snapshot } from "./api";
 import { Sidebar } from "./components/Sidebar";
 import { Home } from "./components/Home";
 import { Room } from "./components/Room";
@@ -148,6 +148,7 @@ export function App() {
         }}
         onChat={(text) => void send({ type: "chat", text })}
         onReact={(reaction) => void send({ type: "react", reaction })}
+        onShowCall={() => void showCall()}
         onUpdate={runUpdate}
         settingsOpen={settingsOpen}
         onSettings={() => setSettingsOpen((o) => !o)}

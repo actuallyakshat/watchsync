@@ -42,6 +42,14 @@ pub enum UiCmd {
     GetFile { offer_id: String },
     CancelTransfer { id: u64 },
     React { reaction: Reaction },
+    /// This person's mic / camera went on or off (the call window owns them).
+    SetCall { mic: bool, cam: bool },
+    /// A WebRTC signalling message for the peer with endpoint id `to`.
+    Signal { to: String, data: serde_json::Value },
+    /// Show a short message on the movie ("Mic muted").
+    Notify { text: String },
+    /// Enter or leave fullscreen in the movie window.
+    ToggleFullscreen,
     Leave,
     /// Test only: drop the connection to the host as if the network blinked.
     #[doc(hidden)]
@@ -60,6 +68,16 @@ pub struct Options {
     pub send_start_timeout: Duration,
     /// Give up on a download if the sender's app doesn't answer.
     pub request_timeout: Duration,
+    /// Where WebRTC signalling from others goes (the call window). Not part
+    /// of the snapshot, which may drop all but the latest.
+    pub signals: Option<async_channel::Sender<SignalIn>>,
+}
+
+/// A signalling message from the peer with endpoint id `from`.
+#[derive(Clone, Debug, Serialize)]
+pub struct SignalIn {
+    pub from: String,
+    pub data: serde_json::Value,
 }
 
 impl Default for Options {
@@ -69,6 +87,7 @@ impl Default for Options {
             downloads: share::default_downloads(),
             send_start_timeout: Duration::from_secs(120),
             request_timeout: Duration::from_secs(30),
+            signals: None,
         }
     }
 }
@@ -179,6 +198,10 @@ pub struct PeerRow {
     pub version: String,
     /// Runs a different WatchSync version than the host.
     pub outdated: bool,
+    /// Endpoint id ("" for apps too old to say): the call's address for them.
+    pub id: String,
+    pub mic: bool,
+    pub cam: bool,
 }
 
 /// One line in the room's chat: a message or a reaction.
@@ -240,6 +263,12 @@ pub struct Snapshot {
     pub transfers: Vec<TransferView>,
     /// The host's movie, found on this Mac by its exact name (not opened yet).
     pub found: Option<FoundFile>,
+    /// This Mac's endpoint id in the room (the call's address for us).
+    pub my_id: String,
+    pub mic: bool,
+    pub cam: bool,
+    /// The movie window is fullscreen.
+    pub player_fullscreen: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -285,6 +314,8 @@ struct Peer {
     code: String,
     last_seen: Instant,
     offer: Option<Offer>,
+    mic: bool,
+    cam: bool,
 }
 
 /// Longest display name, in characters.
@@ -358,6 +389,11 @@ struct Engine {
     crop_by: Option<String>,
     /// (player generation, crop) last applied to mpv.
     applied_crop: Option<(u64, Crop)>,
+
+    /// This person's mic / camera in the call.
+    mic: bool,
+    cam: bool,
+    player_fullscreen: bool,
 }
 
 pub async fn run(
@@ -425,6 +461,9 @@ pub async fn run_with(
         crop: Crop::Original,
         crop_by: None,
         applied_crop: None,
+        mic: false,
+        cam: false,
+        player_fullscreen: false,
     };
     e.publish();
 
@@ -579,6 +618,28 @@ impl Engine {
                 self.add_chat(self.name.clone(), None, Some(reaction), true);
                 self.relay(Msg::React { from: self.name.clone(), reaction }, None);
             }
+            UiCmd::SetCall { mic, cam } => {
+                self.mic = mic;
+                self.cam = cam;
+                if self.is_host() {
+                    self.refresh_peers();
+                } else if let Some(tx) = self.host_tx() {
+                    let _ = tx.send(Msg::Call { mic, cam });
+                }
+            }
+            UiCmd::Signal { to, data } => {
+                let from_id = self.my_id();
+                self.route(Msg::Signal { to, from_id, data });
+            }
+            UiCmd::Notify { text } => {
+                let text: String = text.chars().take(MAX_CHAT).collect();
+                self.osd(&text).await;
+            }
+            UiCmd::ToggleFullscreen => {
+                if let Some(mpv) = self.mpv.clone() {
+                    let _ = mpv.toggle_fullscreen().await;
+                }
+            }
             UiCmd::Leave => self.leave().await,
             UiCmd::TestDropHostLink => {
                 if let Role::Guest { link: Some(l), .. } = &self.role {
@@ -731,6 +792,7 @@ impl Engine {
         self.mpv_gen += 1;
         self.applied_crop = None;
         self.drift_ms = None;
+        self.player_fullscreen = false;
     }
 
     /// Apply the room's crop to the player if it isn't already. Needs the
@@ -1064,9 +1126,11 @@ impl Engine {
                     self.submit(Intent::Seek { position: pos }).await;
                 }
             }
+            MpvEvent::Fullscreen(on) => self.player_fullscreen = on,
             MpvEvent::Exited => {
                 self.mpv = None;
                 self.drift_ms = None;
+                self.player_fullscreen = false;
             }
         }
     }
@@ -1089,6 +1153,8 @@ impl Engine {
                             code: String::new(),
                             last_seen: Instant::now(),
                             offer: None,
+                            mic: false,
+                            cam: false,
                         },
                     );
                 }
@@ -1135,6 +1201,7 @@ impl Engine {
                     }
                     Msg::FileCode { offer_id, code, .. } => self.start_download(offer_id, code),
                     Msg::FileRefused { offer_id, reason, .. } => self.refused(&offer_id, reason),
+                    msg @ Msg::Signal { .. } => self.route(msg),
                     _ => {}
                 }
             }
@@ -1176,6 +1243,10 @@ impl Engine {
         for _ in 0..5 {
             let _ = link.tx.send(Msg::Ping { t0: now_ms() });
         }
+        let _ = link.tx.send(Msg::Call {
+            mic: self.mic,
+            cam: self.cam,
+        });
         self.last_host_msg = Instant::now();
         self.role = Role::Guest {
             link: Some(link),
@@ -1350,11 +1421,19 @@ impl Engine {
     /// the host delivers it; guests hand everything to the host.
     fn route(&mut self, msg: Msg) {
         let to = match &msg {
-            Msg::FileRequest { to, .. } | Msg::FileCode { to, .. } | Msg::FileRefused { to, .. } => to.clone(),
+            Msg::FileRequest { to, .. }
+            | Msg::FileCode { to, .. }
+            | Msg::FileRefused { to, .. }
+            | Msg::Signal { to, .. } => to.clone(),
             _ => return,
         };
         if to == self.my_id() {
             match msg {
+                Msg::Signal { from_id, data, .. } => {
+                    if let Some(signals) = &self.options.signals {
+                        let _ = signals.try_send(SignalIn { from: from_id, data });
+                    }
+                }
                 Msg::FileRequest { offer_id, from_id, from, .. } => self.serve_request(offer_id, from_id, from),
                 Msg::FileCode { offer_id, code, .. } => self.start_download(offer_id, code),
                 Msg::FileRefused { offer_id, reason, .. } => self.refused(&offer_id, reason),
@@ -1726,6 +1805,20 @@ impl Engine {
                 self.route(Msg::FileRequest { offer_id, to, from_id, from });
             }
             msg @ (Msg::FileCode { .. } | Msg::FileRefused { .. }) => self.route(msg),
+            Msg::Call { mic, cam } => {
+                if (peer.mic, peer.cam) != (mic, cam) {
+                    peer.mic = mic;
+                    peer.cam = cam;
+                    self.refresh_peers();
+                }
+            }
+            Msg::Signal { to, data, .. } => {
+                // The host vouches for who sent it.
+                let from_id = peer.id.clone();
+                if !from_id.is_empty() {
+                    self.route(Msg::Signal { to, from_id, data });
+                }
+            }
             Msg::React { reaction, .. } => {
                 let from = peer.name.clone();
                 self.relay(Msg::React { from: from.clone(), reaction }, Some(id));
@@ -1762,6 +1855,8 @@ impl Engine {
             id: my_id,
             code: my_code,
             file_name: self.file_name.clone(),
+            mic: self.mic,
+            cam: self.cam,
         }];
         // Join order: this is also the order of succession.
         let mut others: Vec<_> = peers.iter().collect();
@@ -1775,6 +1870,8 @@ impl Engine {
             id: p.id.clone(),
             code: p.code.clone(),
             file_name: None,
+            mic: p.mic,
+            cam: p.cam,
         }));
         self.room_peers = list.clone();
         self.broadcast(Msg::Peers(list));
@@ -1814,6 +1911,9 @@ impl Engine {
                 drift_ms: p.drift_ms,
                 version: p.version.clone(),
                 outdated: !p.is_host && p.version != host_version,
+                id: p.id.clone(),
+                mic: p.mic,
+                cam: p.cam,
             })
             .collect();
         let snapshot = Snapshot {
@@ -1849,6 +1949,10 @@ impl Engine {
             sharing: self.my_offer.is_some(),
             transfers: self.transfers.iter().map(|t| t.view.clone()).collect(),
             found: self.found.clone(),
+            my_id: self.my_id(),
+            mic: self.mic,
+            cam: self.cam,
+            player_fullscreen: self.player_fullscreen,
         };
         // Bounded(1) channel: replace any snapshot the UI hasn't drawn yet.
         let _ = self.ui.force_send(snapshot);

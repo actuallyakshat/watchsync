@@ -4,7 +4,7 @@
 
 use serde::Serialize;
 use tauri::{Emitter, Manager, RunEvent, State};
-use watchsync::engine::{self, Snapshot, UiCmd};
+use watchsync::engine::{self, Options, Phase, SignalIn, Snapshot, UiCmd};
 use watchsync::{mpv, share};
 
 struct Bridge {
@@ -63,6 +63,19 @@ async fn install_player() -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// The call window: always there while in a room (it carries the call's
+/// audio even when collapsed), hidden otherwise.
+const CALL: &str = "call";
+
+/// "Show call" in the main window: bring the call window up, expanded.
+#[tauri::command]
+fn show_call(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(CALL) {
+        let _ = w.show();
+        let _ = w.emit_to(CALL, "call-expand", ());
+    }
+}
+
 /// The Mac's full user name ("Akshat Dubey"), falling back to $USER.
 fn display_name() -> String {
     std::process::Command::new("id")
@@ -79,13 +92,18 @@ fn display_name() -> String {
 pub fn run() {
     let (snap_tx, snap_rx) = async_channel::bounded::<Snapshot>(1);
     let (cmd_tx, cmd_rx) = async_channel::unbounded::<UiCmd>();
+    let (signal_tx, signal_rx) = async_channel::unbounded::<SignalIn>();
 
     // The engine (networking + player control) gets its own runtime thread.
     let name = display_name();
     std::thread::spawn(move || {
+        let options = Options {
+            signals: Some(signal_tx),
+            ..Options::default()
+        };
         tokio::runtime::Runtime::new()
             .expect("tokio runtime")
-            .block_on(engine::run(name, snap_tx, cmd_rx));
+            .block_on(engine::run_with(name, snap_tx, cmd_rx, options));
     });
 
     let app = tauri::Builder::default()
@@ -96,13 +114,28 @@ pub fn run() {
         // watchsync://join/<code> links open the app and join the room.
         .plugin(tauri_plugin_deep_link::init())
         .manage(Bridge { cmd: cmd_tx })
-        .invoke_handler(tauri::generate_handler![send, player_setup, install_player, install_croc])
+        .invoke_handler(tauri::generate_handler![send, player_setup, install_player, install_croc, show_call])
         .setup(move |app| {
             // Push every engine snapshot to the window.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
+                let mut in_room = false;
                 while let Ok(snap) = snap_rx.recv_blocking() {
+                    let now_in_room = snap.phase == Phase::Room;
+                    if now_in_room != in_room {
+                        in_room = now_in_room;
+                        if let Some(w) = handle.get_webview_window(CALL) {
+                            let _ = if in_room { w.show() } else { w.hide() };
+                        }
+                    }
                     let _ = handle.emit("snapshot", &snap);
+                }
+            });
+            // Signalling from others goes to the call window only, in order.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                while let Ok(signal) = signal_rx.recv_blocking() {
+                    let _ = handle.emit_to(CALL, "signal", &signal);
                 }
             });
             if let Some(window) = app.get_webview_window("main") {

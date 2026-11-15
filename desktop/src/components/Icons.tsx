@@ -93,3 +93,72 @@ export const FilmIcon = () => (
     <path d="M5.5 3v10M10.5 3v10M2.5 6h3M2.5 10h3M10.5 6h3M10.5 10h3" />
   </svg>
 );
+
+/** Microphone; struck through when off. */
+export function MicIcon({ off }: { off?: boolean }) {
+  return (
+    <svg {...base}>
+      <rect x="5.75" y="1.75" width="4.5" height="8" rx="2.25" />
+      <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.25" />
+      {off && <path d="M2.5 2.5l11 11" />}
+    </svg>
+  );
+}
+
+/** Video camera; struck through when off. */
+export function CamIcon({ off }: { off?: boolean }) {
+  return (
+    <svg {...base}>
+      <rect x="1.75" y="4" width="8.5" height="8" rx="1.75" />
+      <path d="M10.25 7l4-2.25v6.5l-4-2.25" />
+      {off && <path d="M2.5 2.5l11 11" />}
+    </svg>
+  );
+}
+
+/** Four tiles. */
+export const GridIcon = () => (
+  <svg {...base}>
+    <rect x="2" y="2" width="5" height="5" rx="1" />
+    <rect x="9" y="2" width="5" height="5" rx="1" />
+    <rect x="2" y="9" width="5" height="5" rx="1" />
+    <rect x="9" y="9" width="5" height="5" rx="1" />
+  </svg>
+);
+
+/** One big tile with a small one: the speaker view. */
+export const SpeakerIcon = () => (
+  <svg {...base}>
+    <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5" />
+    <rect x="9.25" y="9" width="3.5" height="2.75" rx=".5" />
+  </svg>
+);
+
+/** You, in a small corner frame. */
+export const SelfIcon = () => (
+  <svg {...base}>
+    <circle cx="8" cy="6" r="2.5" />
+    <path d="M3.5 13.5c.8-2.2 2.5-3.25 4.5-3.25s3.7 1.05 4.5 3.25" />
+  </svg>
+);
+
+/** Arrows apart: make bigger. */
+export const ExpandIcon = () => (
+  <svg {...base}>
+    <path d="M9.5 2.5h4v4M13.5 2.5L9 7M6.5 13.5h-4v-4M2.5 13.5L7 9" />
+  </svg>
+);
+
+/** Arrows together: shrink to the strip. */
+export const CollapseIcon = () => (
+  <svg {...base}>
+    <path d="M13.5 6.5h-4v-4M9.5 6.5l4.5-4.5M2.5 9.5h4v4M6.5 9.5L2 14" />
+  </svg>
+);
+
+/** A pin: keep this person in view. */
+export const PinIcon = () => (
+  <svg {...base}>
+    <path d="M6 2.5h4M7 2.5v3.75L4.5 9h7L9 6.25V2.5M8 9v4.5" />
+  </svg>
+);

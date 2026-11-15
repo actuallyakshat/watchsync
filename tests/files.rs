@@ -25,6 +25,7 @@ fn send_a_movie_to_a_friend_while_keeping_the_mac_awake() {
         downloads: test_downloads(name),
         send_start_timeout: Duration::from_secs(15),
         request_timeout: Duration::from_secs(10),
+        signals: None,
     };
     let mut host = Peer::start_opts("Host", opts("Host"));
     let riya_downloads = test_downloads("Riya");

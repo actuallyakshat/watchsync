@@ -19,6 +19,8 @@ pub enum MpvEvent {
     Pause(bool),
     /// Playback resumed after a seek or file load.
     PlaybackRestart,
+    /// The window entered or left fullscreen.
+    Fullscreen(bool),
     /// mpv quit (window closed).
     Exited,
 }
@@ -215,6 +217,9 @@ impl Mpv {
             .arg("--osd-bar=yes")
             .arg("--sub-auto=fuzzy")
             .arg("--hr-seek=yes")
+            // Fullscreen on the current desktop instead of a separate macOS
+            // Space, so the call window can float on top of the movie.
+            .arg("--native-fs=no")
             // Everyone must see the same picture: start from a neutral view.
             .args(VIEW_RESET.iter().map(|(k, v)| format!("--{k}={v}")))
             .arg("--title=WatchSync — ${filename}")
@@ -273,6 +278,9 @@ impl Mpv {
                         "property-change" if v["name"] == "pause" => {
                             v["data"].as_bool().map(MpvEvent::Pause)
                         }
+                        "property-change" if v["name"] == "fullscreen" => {
+                            v["data"].as_bool().map(MpvEvent::Fullscreen)
+                        }
                         "playback-restart" => Some(MpvEvent::PlaybackRestart),
                         _ => None,
                     };
@@ -302,6 +310,7 @@ impl Mpv {
             _child: child,
         };
         mpv.command(json!(["observe_property", 1, "pause"])).await?;
+        mpv.command(json!(["observe_property", 2, "fullscreen"])).await?;
         Ok(mpv)
     }
 
@@ -402,6 +411,10 @@ impl Mpv {
         self.command(json!(["set_property", "af", comfort.audio_filters()]))
             .await?;
         Ok(())
+    }
+
+    pub async fn toggle_fullscreen(&self) -> Result<()> {
+        self.command(json!(["cycle", "fullscreen"])).await.map(|_| ())
     }
 
     /// Show text on the movie. Escaped, so names and chat can't expand mpv

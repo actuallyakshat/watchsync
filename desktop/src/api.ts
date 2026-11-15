@@ -72,6 +72,10 @@ export interface Person {
   drift_ms: number | null;
   version: string;
   outdated: boolean;
+  /** Endpoint id: their address in the call ("" for apps too old to call). */
+  id: string;
+  mic: boolean;
+  cam: boolean;
 }
 
 export interface Snapshot {
@@ -104,6 +108,17 @@ export interface Snapshot {
   transfers: Transfer[];
   /** The host's movie, found on this Mac by its exact name. */
   found: { path: string; folder: string } | null;
+  /** This Mac's endpoint id in the room. */
+  my_id: string;
+  mic: boolean;
+  cam: boolean;
+  player_fullscreen: boolean;
+}
+
+/** WebRTC signalling from the person with endpoint id `from`. */
+export interface SignalIn {
+  from: string;
+  data: unknown;
 }
 
 export type Command =
@@ -123,6 +138,10 @@ export type Command =
   | { type: "stop_sharing" }
   | { type: "get_file"; offer_id: string }
   | { type: "cancel_transfer"; id: number }
+  | { type: "set_call"; mic: boolean; cam: boolean }
+  | { type: "signal"; to: string; data: unknown }
+  | { type: "notify"; text: string }
+  | { type: "toggle_fullscreen" }
   | { type: "leave" };
 
 export interface PlayerSetup {
@@ -136,8 +155,13 @@ export const send = (cmd: Command) => invoke<void>("send", { cmd });
 export const playerSetup = () => invoke<PlayerSetup>("player_setup");
 export const installPlayer = () => invoke<void>("install_player");
 export const installCroc = () => invoke<void>("install_croc");
+export const showCall = () => invoke<void>("show_call");
 export const onSnapshot = (f: (s: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>("snapshot", (e) => f(e.payload));
+export const onSignal = (f: (s: SignalIn) => void): Promise<UnlistenFn> =>
+  listen<SignalIn>("signal", (e) => f(e.payload));
+/** "Show call" was pressed in the main window. */
+export const onCallExpand = (f: () => void): Promise<UnlistenFn> => listen("call-expand", () => f());
 
 export const EMPTY: Snapshot = {
   name: "",
@@ -168,4 +192,8 @@ export const EMPTY: Snapshot = {
   sharing: false,
   transfers: [],
   found: null,
+  my_id: "",
+  mic: false,
+  cam: false,
+  player_fullscreen: false,
 };
