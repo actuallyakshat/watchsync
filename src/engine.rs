@@ -322,6 +322,9 @@ struct Peer {
 pub const MAX_NAME: usize = 32;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a new room waits for its short invite code to be published
+/// before falling back to the long link.
+const INVITE_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// After we pause/unpause mpv ourselves, pause events within this window are ours.
 const OWN_PAUSE_GRACE: Duration = Duration::from_millis(400);
@@ -351,8 +354,12 @@ struct Engine {
     endpoint: Option<Endpoint>,
     /// Accepting guests on `endpoint` already.
     serving: bool,
-    /// The host's code (shared as the invite).
+    /// The host's address code (what guests dial and reconnect to).
     code: Option<String>,
+    /// The room's short invite code ("abc-defg-hij"), if it has one.
+    invite: Option<String>,
+    /// Host: keeps `invite` pointing at this Mac.
+    invite_publisher: Option<net::InvitePublisher>,
     /// Numbers host connections and attempts so stale ones are ignored.
     next_conn: u64,
     last_host_msg: Instant,
@@ -435,6 +442,8 @@ pub async fn run_with(
         endpoint: None,
         serving: false,
         code: None,
+        invite: None,
+        invite_publisher: None,
         next_conn: 1,
         last_host_msg: now,
         reconnects: 0,
@@ -534,6 +543,7 @@ impl Engine {
                         self.serving = true;
                         self.code = Some(net::code_of(&endpoint));
                         self.endpoint = Some(endpoint);
+                        self.publish_invite(net::new_invite(), true).await;
                         self.role = Role::Host {
                             peers: HashMap::new(),
                         };
@@ -547,9 +557,14 @@ impl Engine {
             UiCmd::Join { code } if self.phase == Phase::Home => {
                 self.phase = Phase::Connecting;
                 self.publish();
+                let invite = net::parse_invite(&code);
                 let code = net::extract_code(&code);
                 let attempt = async {
                     let endpoint = net::bind().await?;
+                    let code = match &invite {
+                        Some(invite) => net::resolve_invite(&endpoint, invite).await?,
+                        None => code,
+                    };
                     let hello = net::hello(&self.name, &endpoint);
                     let link = net::connect(&endpoint, &code, self.next_conn, hello, self.net_tx.clone()).await?;
                     anyhow::Ok((endpoint, link))
@@ -559,6 +574,7 @@ impl Engine {
                         self.next_conn += 1;
                         self.endpoint = Some(endpoint);
                         self.code = Some(link.code.clone());
+                        self.invite = invite;
                         self.connected_to(link, true);
                         self.phase = Phase::Room;
                     }
@@ -731,6 +747,8 @@ impl Engine {
             tokio::spawn(async move { endpoint.close().await });
         }
         self.serving = false;
+        self.invite = None;
+        self.invite_publisher = None;
     }
 
     /// Who takes over if the host leaves: the earliest-joined guest that
@@ -767,6 +785,8 @@ impl Engine {
         }
         self.serving = false;
         self.code = None;
+        self.invite = None;
+        self.invite_publisher = None;
         self.phase = Phase::Home;
         self.room_peers.clear();
         self.state = PlaybackState::default();
@@ -1181,7 +1201,12 @@ impl Engine {
                 match msg {
                     Msg::Pong { t0, host_ms } => self.clock.add_sample(t0, host_ms, now_ms()),
                     Msg::State(s) => self.apply_state(s).await,
-                    Msg::Peers(list) => self.room_peers = list,
+                    Msg::Peers(list) => {
+                        if let Some(host) = list.iter().find(|p| p.is_host && !p.invite.is_empty()) {
+                            self.invite = Some(host.invite.clone());
+                        }
+                        self.room_peers = list;
+                    }
                     Msg::Crop { crop, by } => {
                         if crop != self.crop {
                             self.osd(&format!("{by} set the picture to {}", crop.label()))
@@ -1251,6 +1276,8 @@ impl Engine {
             cam: self.cam,
         });
         self.last_host_msg = Instant::now();
+        // Guests never publish the invite (the host does).
+        self.invite_publisher = None;
         self.role = Role::Guest {
             link: Some(link),
             lost: None,
@@ -1363,12 +1390,30 @@ impl Engine {
             self.serving = true;
         }
         self.code = Some(net::code_of(&endpoint));
+        // Keep the room's invite working: point it at this Mac now.
+        let invite = self.invite.clone().unwrap_or_else(net::new_invite);
+        self.publish_invite(invite, false).await;
         self.role = Role::Host {
             peers: HashMap::new(),
         };
         self.error = None;
         self.refresh_peers();
         self.osd("You're now the host").await;
+    }
+
+    /// Host: start pointing `invite` at this Mac. With `wait`, the room falls
+    /// back to the long link if the code can't be published in time; without,
+    /// it keeps the code and keeps retrying in the background.
+    async fn publish_invite(&mut self, invite: String, wait: bool) {
+        self.invite_publisher = None;
+        self.invite = None;
+        let Some(endpoint) = &self.endpoint else { return };
+        let Ok((publisher, first)) = net::publish_invite(endpoint, &invite) else { return };
+        if wait && !matches!(timeout(INVITE_TIMEOUT, first).await, Ok(Ok(()))) {
+            return;
+        }
+        self.invite_publisher = Some(publisher);
+        self.invite = Some(invite);
     }
 
     /// Host: drop guests we haven't heard from (their connection died quietly).
@@ -1860,6 +1905,7 @@ impl Engine {
             file_name: self.file_name.clone(),
             mic: self.mic,
             cam: self.cam,
+            invite: self.invite.clone().unwrap_or_default(),
         }];
         // Join order: this is also the order of succession.
         let mut others: Vec<_> = peers.iter().collect();
@@ -1875,6 +1921,7 @@ impl Engine {
             file_name: None,
             mic: p.mic,
             cam: p.cam,
+            invite: String::new(),
         }));
         self.room_peers = list.clone();
         self.broadcast(Msg::Peers(list));
@@ -1944,7 +1991,12 @@ impl Engine {
             chat: self.chat.clone(),
             tracks: self.tracks.clone(),
             comfort: self.comfort,
-            invite_link: self.code.as_deref().filter(|_| self.is_host()).map(net::invite_link),
+            invite_link: self
+                .invite
+                .as_deref()
+                .or(self.code.as_deref())
+                .filter(|_| self.is_host())
+                .map(net::invite_link),
             offers: {
                 let me = self.my_id();
                 self.offers.iter().filter(|o| o.from_id != me).cloned().collect()

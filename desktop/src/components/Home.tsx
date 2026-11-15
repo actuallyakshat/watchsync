@@ -39,7 +39,7 @@ export function Home({ connecting, onHost, onJoin }: Props) {
           <input
             value={code}
             onChange={(e) => setCode(e.target.value)}
-            placeholder="Paste the invite link"
+            placeholder="Paste the invite link or code"
             aria-label="Invite link"
             spellCheck={false}
             autoCorrect="off"

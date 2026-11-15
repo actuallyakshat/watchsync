@@ -62,9 +62,10 @@
 </main>
 <script>
   // The invite code is after "#", so it never leaves this browser.
-  const code = decodeURIComponent(location.hash.slice(1)).replace(/\s+/g, "");
+  const code = decodeURIComponent(location.hash.slice(1)).replace(/\s+/g, "").toLowerCase();
   const open = document.getElementById("open");
-  if (!/^[0-9a-f]{16,}$/i.test(code)) {
+  // A short code ("abc-defg-hij") or an older, long hex one.
+  if (!/^[a-z]{3}-?[a-z]{4}-?[a-z]{3}$/.test(code) && !/^[0-9a-f]{16,}$/.test(code)) {
     document.getElementById("title").textContent = "This invite link is incomplete.";
     document.getElementById("lede").innerHTML = '<span class="bad">Ask your friend to copy the invite again from WatchSync.</span>';
     document.getElementById("actions").remove();
