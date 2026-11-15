@@ -32,6 +32,13 @@ Both also install WatchSync's helper apps, mpv (the video player) and croc
 - **Survives trouble**: if your connection blinks, you rejoin on your own
   while the movie keeps playing. If the host leaves or their Mac goes to
   sleep, the next person who joined takes over as host.
+- **Video call built in**: being in a room is being in the call (mic and
+  camera off until you turn them on). The call floats in a small
+  always-on-top window you can put anywhere, even over the movie in
+  fullscreen: a strip showing who's here, or expanded to show whoever's
+  talking or everyone. Space, arrows and F still control the movie from it;
+  M and V toggle your mic and camera. Use headphones, or friends hear the
+  movie twice.
 - **Chat and reactions**, in the sidebar and on the movie itself.
 - **Same picture for everyone**: pick a crop (4:3, IMAX 1.43:1, 1.66:1, 16:9,
   1.85:1, IMAX 1.90:1, 2.00:1, 2.20:1, 2.39:1, 2.76:1) and every player shows

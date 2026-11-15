@@ -1,5 +1,11 @@
 Watch the same movie with friends on separate Macs, in sync. Everyone plays their own copy; pause, play or seek on any Mac and it happens for everyone. No accounts.
 
+## New in 0.5.0: video calls
+
+Being in a room is now being in a call. Mic and camera start off; turn them on from the small call window that floats on top of everything, including the movie in fullscreen. Drag it anywhere, or expand it to see whoever's talking (or everyone, in a grid). Space, arrows and F still control the movie from the call window; M and V toggle your mic and camera.
+
+Use headphones, or your friends will hear the movie twice. This is the first version of calls: shortcuts that work from any app, volume per person and camera/mic pickers are coming.
+
 ## Install
 
 With Homebrew:
@@ -26,5 +32,5 @@ Both also install mpv, the video player WatchSync uses. Works on Apple Silicon a
 ## Good to know
 
 - Everyone needs the exact same file (same rip). Otherwise the timing will be off.
-- Use headphones if you're on a call together.
-- If the host quits, the room ends.
+- Use headphones on the call.
+- If the host quits, the next person who joined takes over.

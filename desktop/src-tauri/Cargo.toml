@@ -1,6 +1,6 @@
 [package]
 name = "watchsync-desktop"
-version = "0.4.0"
+version = "0.5.0"
 description = "WatchSync for macOS"
 edition = "2024"
 default-run = "WatchSync"
