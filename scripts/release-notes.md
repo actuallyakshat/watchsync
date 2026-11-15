@@ -6,6 +6,7 @@ Watch the same movie with friends on separate Macs, in sync. Everyone plays thei
 - **⌥⌘M / ⌥⌘V** turn your mic and camera on or off from any app, even with the movie fullscreen, while you're in a room. Change them in Settings → Call shortcuts.
 - **Quality to match**: friends send you video only as big as you show it (up to 1080p30), and nothing while the call is shrunk.
 - **Your own mix**: a Voices volume and one per friend. Pick your camera and mic in the call window's settings (the gear).
+- **Clean mic out of the box**: typing, mouse clicks and background noise stay out, with nothing to set up. Your voice opens the mic; the call settings have a live meter, sensitivity and input volume if you want to tune it.
 - **Headphones**: on speakers with your mic on, WatchSync asks for headphones, since friends would hear the movie twice.
 - **Gets through**: if two Macs can't connect directly, the call relays through iroh. Call settings → Troubleshooting can force it and shows each friend's path.
 - The call window comes back where you left it.

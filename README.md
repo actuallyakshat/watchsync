@@ -44,6 +44,11 @@ Both also install WatchSync's helper apps, mpv (the video player) and croc
     them (up to 1080p30), and none while the call is shrunk.
   - **Your own mix**: a Voices volume and one per friend; pick your camera
     and mic in the call window's settings.
+  - **Clean mic out of the box**: a voice gate keeps typing, mouse clicks
+    and room noise out (it follows your room, no setting needed), on top of
+    the system's echo cancellation and noise suppression. Call settings show
+    a live meter, and let you turn it off, set sensitivity by hand, and
+    change your input volume.
   - **Headphones**: on speakers with your mic on, it asks for headphones,
     since friends would hear the movie twice.
   - **Gets through**: if two Macs can't connect directly, the call relays

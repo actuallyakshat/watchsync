@@ -1719,3 +1719,38 @@ html.call-window #root {
   font-size: 11px;
   line-height: 1.4;
 }
+
+.mic-input {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0 4px 84px;
+}
+
+.mic-meter {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 0.1);
+  overflow: hidden;
+}
+
+.mic-meter i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--call-muted);
+  transition: width 0.08s linear;
+}
+
+.mic-meter i.open {
+  background: var(--call-talk);
+}
+
+/* Where the gate opens. */
+.mic-meter b {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--call-ink);
+}

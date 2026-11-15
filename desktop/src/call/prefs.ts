@@ -1,3 +1,5 @@
+import { DEFAULT_MIC, type MicSettings } from "./micChain";
+
 // Call settings remembered on this Mac. Mic and camera start off the first
 // time; after that a room starts the way you last left them.
 export interface CallPrefs {
@@ -17,6 +19,8 @@ export interface CallPrefs {
   speakerId: string;
   /** Troubleshooting: always relay through iroh, even when direct works. */
   forceRelay: boolean;
+  /** How your mic is cleaned up before it's sent. */
+  micInput: MicSettings;
 }
 
 export const CALL_KEY = "watchsync.call";
@@ -33,6 +37,7 @@ export const DEFAULT_PREFS: CallPrefs = {
   camId: "",
   speakerId: "",
   forceRelay: false,
+  micInput: DEFAULT_MIC,
 };
 
 export function loadPrefs(): CallPrefs {
@@ -57,6 +62,7 @@ export function loadPrefs(): CallPrefs {
       camId: typeof p.camId === "string" ? p.camId : "",
       speakerId: typeof p.speakerId === "string" ? p.speakerId : "",
       forceRelay: p.forceRelay === true,
+      micInput: micSettings(p.micInput),
     };
   } catch {
     return DEFAULT_PREFS;
@@ -65,6 +71,21 @@ export function loadPrefs(): CallPrefs {
 
 export function savePrefs(p: CallPrefs) {
   localStorage.setItem(CALL_KEY, JSON.stringify(p));
+}
+
+function micSettings(m: unknown): MicSettings {
+  if (!m || typeof m !== "object") return DEFAULT_MIC;
+  const o = m as Record<string, unknown>;
+  const bool = (k: keyof MicSettings) => (typeof o[k] === "boolean" ? (o[k] as boolean) : (DEFAULT_MIC[k] as boolean));
+  const num = (k: keyof MicSettings, lo: number, hi: number) =>
+    typeof o[k] === "number" && Number.isFinite(o[k]) ? clamp(o[k] as number, lo, hi) : (DEFAULT_MIC[k] as number);
+  return {
+    suppress: bool("suppress"),
+    auto: bool("auto"),
+    thresholdDb: num("thresholdDb", -80, -10),
+    volume: num("volume", 0, 2),
+    autoGain: bool("autoGain"),
+  };
 }
 
 const volume = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? clamp(v, 0, 1) : 1);

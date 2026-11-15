@@ -19,11 +19,11 @@ import {
 } from "../components/Icons";
 import { ICE_SERVERS, Mesh, type Kind, type Path, type Remote, type SignalData, type Size } from "./mesh";
 import { loadPrefs, savePrefs, type CallPrefs } from "./prefs";
+import { micConstraints, processMic, type MicChain, type MicSettings } from "./micChain";
 import { isTalking, pickSpeaker, track, type Talk } from "./speaker";
 import { PILL_HEIGHT, pillWidth } from "./sizes";
 import { onResized, rememberPosition, restorePosition, setWindowSize, startResize } from "./win";
 
-const AUDIO: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
 const VIDEO: MediaTrackConstraints = {
   width: { ideal: 1920 },
   height: { ideal: 1080 },
@@ -68,6 +68,9 @@ export function CallApp() {
   }
   const audios = useRef(new Set<HTMLAudioElement>());
   const localMeter = useRef<Meter>(SILENT);
+  /** The mic as captured, and what cleans it up before it's sent. */
+  const rawMic = useRef<MediaStreamTrack | null>(null);
+  const micChain = useRef<MicChain | null>(null);
   const talkRef = useRef(new Map<string, Talk>());
   const inRoom = snap.phase === "room" && snap.my_id !== "";
   const inRoomRef = useRef(inRoom);
@@ -117,15 +120,23 @@ export function CallApp() {
       let track: MediaStreamTrack | null = old;
       if (on && !old) {
         try {
-          const stream = await capture(kind, kind === "audio" ? prefsRef.current.micId : prefsRef.current.camId);
-          track = (kind === "audio" ? stream.getAudioTracks() : stream.getVideoTracks())[0] ?? null;
+          const p = prefsRef.current;
+          const stream = await capture(kind, kind === "audio" ? p.micId : p.camId, p.micInput);
+          const captured = (kind === "audio" ? stream.getAudioTracks() : stream.getVideoTracks())[0] ?? null;
+          const chain = kind === "audio" && captured ? await processMic(captured, p.micInput) : null;
+          track = chain?.track ?? captured;
           if (!inRoomRef.current || m.track(kind)) {
             // Left the room (or turned on twice) while asking.
-            track?.stop();
+            chain?.close();
+            captured?.stop();
             return;
           }
-          if (track) {
-            track.onended = () => void setDevice(kind, false, false); // unplugged
+          if (captured && track) {
+            captured.onended = () => void setDevice(kind, false, false); // unplugged
+            if (kind === "audio") {
+              rawMic.current = captured;
+              micChain.current = chain;
+            }
             m.setTrack(kind, track);
           }
           setError(null);
@@ -137,6 +148,13 @@ export function CallApp() {
       } else if (!on && old) {
         old.onended = null;
         old.stop();
+        if (kind === "audio") {
+          micChain.current?.close();
+          micChain.current = null;
+          if (rawMic.current) rawMic.current.onended = null;
+          rawMic.current?.stop();
+          rawMic.current = null;
+        }
         m.setTrack(kind, null);
         track = null;
       }
@@ -145,7 +163,9 @@ export function CallApp() {
         setMic(isOn);
         if (!isOn || localMeter.current === SILENT) {
           localMeter.current.close();
-          localMeter.current = isOn && track ? meter(track) : SILENT;
+          const chain = micChain.current;
+          // With the gate, you're "talking" only when your voice is sent.
+          localMeter.current = !isOn || !track ? SILENT : chain ? { level: () => (chain.open() ? chain.level() : 0), close: () => {} } : meter(track);
         }
       } else {
         setCam(isOn);
@@ -153,6 +173,17 @@ export function CallApp() {
       }
       if (remember && isOn === on) setPrefs(kind === "audio" ? { mic: on } : { cam: on });
       return isOn;
+    },
+    [setPrefs],
+  );
+
+  /** Change how the mic is cleaned up (live). */
+  const setMicInput = useCallback(
+    (micInput: MicSettings) => {
+      setPrefs({ micInput });
+      prefsRef.current = { ...prefsRef.current, micInput };
+      micChain.current?.set(micInput);
+      void rawMic.current?.applyConstraints?.(micConstraints(micInput)).catch(() => {});
     },
     [setPrefs],
   );
@@ -505,6 +536,11 @@ export function CallApp() {
           onDevice={(kind, id) => void chooseDevice(kind, id)}
           onSpeaker={(speakerId) => setPrefs({ speakerId })}
           onForceRelay={(forceRelay) => setPrefs({ forceRelay })}
+          onMicInput={setMicInput}
+          micMeter={() => {
+            const c = micChain.current;
+            return mic && c ? { level: c.level(), open: c.open(), thresholdDb: c.thresholdDb() } : null;
+          }}
           paths={people.map((p) => ({ name: p.name, path: paths.get(p.id) ?? null }))}
           relayAvailable={!!turn}
           onClose={() => setSettingsOpen(false)}
@@ -769,8 +805,8 @@ function deviceError(kind: Kind, e: unknown): string {
 }
 
 /** Camera or mic, the chosen one if it's still there, else the default. */
-async function capture(kind: Kind, deviceId: string): Promise<MediaStream> {
-  const base = kind === "audio" ? AUDIO : VIDEO;
+async function capture(kind: Kind, deviceId: string, mic: MicSettings): Promise<MediaStream> {
+  const base = kind === "audio" ? micConstraints(mic) : VIDEO;
   const request = (c: MediaTrackConstraints) => navigator.mediaDevices.getUserMedia(kind === "audio" ? { audio: c } : { video: c });
   if (!deviceId) return request(base);
   try {
@@ -789,6 +825,8 @@ function CallSettings({
   onDevice,
   onSpeaker,
   onForceRelay,
+  onMicInput,
+  micMeter,
   paths,
   relayAvailable,
   onClose,
@@ -798,6 +836,9 @@ function CallSettings({
   onDevice: (kind: Kind, id: string) => void;
   onSpeaker: (id: string) => void;
   onForceRelay: (on: boolean) => void;
+  onMicInput: (s: MicSettings) => void;
+  /** Live input level and gate state, while the mic is on and processed. */
+  micMeter: () => { level: number; open: boolean; thresholdDb: number } | null;
   paths: { name: string; path: Path | null }[];
   relayAvailable: boolean;
   onClose: () => void;
@@ -829,6 +870,7 @@ function CallSettings({
     <div className="call-settings" role="dialog" aria-label="Call settings">
       {select("Camera", "videoinput", prefs.camId, (id) => onDevice("video", id))}
       {select("Microphone", "audioinput", prefs.micId, (id) => onDevice("audio", id))}
+      <MicInput settings={prefs.micInput} onChange={onMicInput} meter={micMeter} />
       {CAN_PICK_SPEAKER && select("Speaker", "audiooutput", prefs.speakerId, onSpeaker)}
       <label className="call-setting">
         <span>Voices</span>
@@ -865,6 +907,87 @@ function CallSettings({
       <button className="call-settings-done" onClick={onClose}>
         Done
       </button>
+    </div>
+  );
+}
+
+const dbOf = (level: number) => 20 * Math.log10(Math.max(level, 1e-6));
+/** Where a level sits on the meter, 0–100 (−70 dB to 0 dB). */
+const meterPct = (db: number) => Math.min(100, Math.max(0, ((db + 70) / 70) * 100));
+
+/** Noise suppression, sensitivity, input volume, and a live meter. */
+function MicInput({
+  settings: s,
+  onChange,
+  meter,
+}: {
+  settings: MicSettings;
+  onChange: (s: MicSettings) => void;
+  meter: () => { level: number; open: boolean; thresholdDb: number } | null;
+}) {
+  const [live, setLive] = useState(meter);
+  const read = useRef(meter);
+  read.current = meter;
+  useEffect(() => {
+    const timer = setInterval(() => setLive(read.current()), 100);
+    return () => clearInterval(timer);
+  }, []);
+  const set = (change: Partial<MicSettings>) => onChange({ ...s, ...change });
+  const threshold = s.auto ? (live?.thresholdDb ?? null) : s.thresholdDb;
+
+  return (
+    <div className="mic-input">
+      <div className="mic-meter" aria-hidden="true">
+        <i className={live?.open ? "open" : ""} style={{ width: `${live ? meterPct(dbOf(live.level)) : 0}%` }} />
+        {s.suppress && threshold !== null && <b style={{ left: `${meterPct(threshold)}%` }} />}
+      </div>
+      <p className="call-hint" aria-live="polite">
+        {!live ? "Turn your mic on to test it." : live.open ? "Sending your voice" : "Quiet: nothing sent"}
+      </p>
+      <label className="call-check">
+        <input type="checkbox" checked={s.suppress} onChange={(e) => set({ suppress: e.target.checked })} />
+        Noise suppression
+      </label>
+      <p className="call-hint">Keeps typing, clicks and background noise out. Your voice opens it.</p>
+      {s.suppress && (
+        <>
+          <label className="call-check">
+            <input type="checkbox" checked={s.auto} onChange={(e) => set({ auto: e.target.checked })} />
+            Set sensitivity automatically
+          </label>
+          {!s.auto && (
+            <label className="call-setting">
+              <span>Sensitivity</span>
+              <input
+                type="range"
+                min={-80}
+                max={-15}
+                step={1}
+                value={-s.thresholdDb - 95}
+                onChange={(e) => set({ thresholdDb: -95 - Number(e.target.value) })}
+                aria-label="Mic sensitivity"
+                title="More sensitive picks up quieter speech, and more noise"
+              />
+            </label>
+          )}
+        </>
+      )}
+      <label className="call-setting">
+        <span>Input volume</span>
+        <input
+          type="range"
+          min={0}
+          max={2}
+          step={0.05}
+          value={s.volume}
+          onChange={(e) => set({ volume: Number(e.target.value) })}
+          aria-label="Mic input volume"
+        />
+      </label>
+      <label className="call-check">
+        <input type="checkbox" checked={s.autoGain} onChange={(e) => set({ autoGain: e.target.checked })} />
+        Adjust mic volume automatically
+      </label>
     </div>
   );
 }

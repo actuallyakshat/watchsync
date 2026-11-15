@@ -8,8 +8,12 @@ export class FakeTrack {
   onended: (() => void) | null = null;
   enabled = true;
   constructor(public kind: string) {}
+  constraints: MediaTrackConstraints[] = [];
   getSettings() {
     return this.kind === "video" ? { width: 1920, height: 1080 } : {};
+  }
+  async applyConstraints(c: MediaTrackConstraints) {
+    this.constraints.push(c);
   }
   stop() {
     this.readyState = "ended";

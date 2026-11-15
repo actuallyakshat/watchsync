@@ -248,3 +248,36 @@ test("the call can relay through iroh, on its own or when forced, and says when 
   expect(await screen.findByText("via iroh", {}, { timeout: 4000 })).toBeInTheDocument();
   expect(screen.getByText("Riya: relayed through iroh")).toBeInTheDocument();
 });
+
+test("the mic is cleaned up out of the box, and can be tuned", async () => {
+  await start();
+  await userEvent.click(screen.getByRole("button", { name: "Turn your mic on" }));
+  // No settings needed: system noise suppression and levelling are on.
+  expect(getUserMedia).toHaveBeenLastCalledWith({
+    audio: expect.objectContaining({ echoCancellation: true, noiseSuppression: true, autoGainControl: true }),
+  });
+  const mic = (await getUserMedia.mock.results[0].value).getTracks()[0] as FakeTrack;
+
+  await userEvent.click(await screen.findByRole("button", { name: "Expand the call" }));
+  await userEvent.click(screen.getByRole("button", { name: "Call settings" }));
+  expect(screen.getByRole("checkbox", { name: "Noise suppression" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Set sensitivity automatically" })).toBeChecked();
+  expect(screen.queryByRole("slider", { name: "Mic sensitivity" })).toBeNull();
+
+  // Changes apply to the live mic and are remembered.
+  await userEvent.click(screen.getByRole("checkbox", { name: "Adjust mic volume automatically" }));
+  expect(mic.constraints.at(-1)).toMatchObject({ autoGainControl: false, noiseSuppression: true });
+  fireEvent.change(screen.getByRole("slider", { name: "Mic input volume" }), { target: { value: "1.5" } });
+  await userEvent.click(screen.getByRole("checkbox", { name: "Set sensitivity automatically" }));
+  fireEvent.change(screen.getByRole("slider", { name: "Mic sensitivity" }), { target: { value: "-30" } });
+  expect(JSON.parse(localStorage.getItem(CALL_KEY)!).micInput).toEqual({
+    suppress: true,
+    auto: false,
+    thresholdDb: -65,
+    volume: 1.5,
+    autoGain: false,
+  });
+  await userEvent.click(screen.getByRole("checkbox", { name: "Noise suppression" }));
+  expect(mic.constraints.at(-1)).toMatchObject({ noiseSuppression: false });
+  expect(screen.queryByRole("checkbox", { name: "Set sensitivity automatically" })).toBeNull();
+});
