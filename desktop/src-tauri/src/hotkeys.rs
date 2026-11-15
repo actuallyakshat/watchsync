@@ -48,9 +48,17 @@ impl Hotkeys {
             return Err("Mic and camera need different shortcuts.".into());
         }
         let mut s = self.inner.lock().unwrap();
+        let (old_mic, old_cam) = (s.mic, s.cam);
         s.mic = mic;
         s.cam = cam;
-        apply(app, &s)
+        if let Err(e) = apply(app, &s) {
+            // Keep the ones that worked.
+            s.mic = old_mic;
+            s.cam = old_cam;
+            let _ = apply(app, &s);
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// In a room or not.
