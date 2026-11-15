@@ -227,3 +227,24 @@ test("voices and each friend have their own volume, remembered", async () => {
   fireEvent.change(screen.getByRole("slider", { name: "Riya's volume" }), { target: { value: "0.5" } });
   await waitFor(() => expect(document.querySelector("audio")!.volume).toBeCloseTo(0.45));
 });
+
+test("the call can relay through iroh, on its own or when forced, and says when it does", async () => {
+  const turn = { urls: "turn:127.0.0.1:5000?transport=udp", username: "u", credential: "p" };
+  await start({ ...riya(true), turn });
+  await waitFor(() => expect(FakePC.all).toHaveLength(1));
+  const servers = FakePC.all[0].config.iceServers!;
+  expect(servers).toContainEqual(turn);
+  expect(FakePC.all[0].config.iceTransportPolicy).toBe("all");
+
+  await userEvent.click(await screen.findByRole("button", { name: "Call settings" }));
+  await userEvent.click(screen.getByText("Troubleshooting"));
+  await userEvent.click(screen.getByRole("checkbox", { name: "Always relay the call through iroh" }));
+  await waitFor(() => expect(FakePC.all.at(-1)!.config.iceTransportPolicy).toBe("relay"));
+  expect(FakePC.all[0].closed).toBe(true);
+  expect(JSON.parse(localStorage.getItem(CALL_KEY)!).forceRelay).toBe(true);
+
+  FakePC.candidateType = "relay";
+  FakePC.all.at(-1)!.connectionState = "connected";
+  expect(await screen.findByText("via iroh", {}, { timeout: 4000 })).toBeInTheDocument();
+  expect(screen.getByText("Riya: relayed through iroh")).toBeInTheDocument();
+});

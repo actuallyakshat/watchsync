@@ -207,3 +207,31 @@ test("each person sends their camera at the size the other shows it", async () =
   await r.deliver();
   expect(bVideo.params.encodings[0].active).toBe(false);
 });
+
+test("changing the relay setting starts the call over on both sides, whoever changes it", async () => {
+  const r = room(["a", "b"]);
+  await connect(r);
+  const relayOnly = { iceServers: [], iceTransportPolicy: "relay" as const };
+
+  r.meshes.get("a")!.setConfig(relayOnly); // the offering side
+  await r.deliver();
+  let live = FakePC.all.filter((pc) => !pc.closed);
+  expect(live).toHaveLength(2);
+  expect(live.find((pc) => pc.config.iceTransportPolicy === "relay")?.connectionState).toBe("connected");
+
+  r.meshes.get("b")!.setConfig(relayOnly); // the answering side asks a to start over
+  await r.deliver();
+  live = FakePC.all.filter((pc) => !pc.closed);
+  expect(live).toHaveLength(2);
+  expect(live.every((pc) => pc.config.iceTransportPolicy === "relay")).toBe(true);
+  expect(live.some((pc) => pc.connectionState === "connected")).toBe(true);
+});
+
+test("each friend's path is read from WebRTC's stats", async () => {
+  const r = room(["a", "b"]);
+  await connect(r);
+  FakePC.candidateType = "relay";
+  expect(await r.meshes.get("a")!.paths()).toEqual(new Map([["b", "relay"]]));
+  FakePC.candidateType = "host";
+  expect(await r.meshes.get("a")!.paths()).toEqual(new Map([["b", "direct"]]));
+});

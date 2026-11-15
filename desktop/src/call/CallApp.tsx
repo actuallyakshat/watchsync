@@ -17,7 +17,7 @@ import {
   SpeakerIcon,
   VolumeIcon,
 } from "../components/Icons";
-import { Mesh, type Kind, type Remote, type SignalData, type Size } from "./mesh";
+import { ICE_SERVERS, Mesh, type Kind, type Path, type Remote, type SignalData, type Size } from "./mesh";
 import { loadPrefs, savePrefs, type CallPrefs } from "./prefs";
 import { isTalking, pickSpeaker, track, type Talk } from "./speaker";
 import { PILL_HEIGHT, pillWidth } from "./sizes";
@@ -231,14 +231,38 @@ export function CallApp() {
     if (inRoom) void send({ type: "set_call", mic, cam });
   }, [inRoom, mic, cam]);
 
-  // Keep a connection to everyone in the room.
+  // Keep a connection to everyone in the room. If they can't reach each
+  // other directly, WebRTC relays through this Mac's relay, over iroh.
   const peerIds = snap.peers.map((p) => p.id).join(",");
+  const turn = snap.turn;
+  const relayOnly = prefs.forceRelay && !!turn;
   useEffect(() => {
     const m = mesh.current!;
     if (!inRoom) return;
+    m.setConfig({
+      iceServers: turn ? [...ICE_SERVERS, { urls: turn.urls, username: turn.username, credential: turn.credential }] : ICE_SERVERS,
+      iceTransportPolicy: relayOnly ? "relay" : "all",
+    });
     m.setMyId(snap.my_id);
     m.sync(peerIds.split(",").filter(Boolean));
-  }, [inRoom, snap.my_id, peerIds]);
+  }, [inRoom, snap.my_id, peerIds, turn?.urls, turn?.username, turn?.credential, relayOnly]);
+
+  // Which path each friend's media takes (shown when it's the relay).
+  const [paths, setPaths] = useState<Map<string, Path | null>>(new Map());
+  useEffect(() => {
+    if (!inRoom) return setPaths(new Map());
+    let live = true;
+    const poll = () =>
+      void mesh.current!.paths().then((p) => {
+        if (live) setPaths(p);
+      });
+    poll();
+    const timer = setInterval(poll, 3000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [inRoom]);
 
   // ------------------------------------------------------------ people
   const byId = useMemo(() => new Map(remotes.map((r) => [r.id, r])), [remotes]);
@@ -425,6 +449,7 @@ export function CallApp() {
               person={p}
               talking={talking(p.id)}
               onSize={onSize}
+              relayed={paths.get(p.id) === "relay"}
               volume={volumeOf(p.name)}
               onVolume={(v) => setVolume(p.name, v)}
               onClick={() => (setPinned(p.id), setPrefs({ layout: "speaker" }))}
@@ -444,6 +469,7 @@ export function CallApp() {
             person={shown}
             talking={talking(shown.id)}
             onSize={onSize}
+            relayed={paths.get(shown.id) === "relay"}
             volume={volumeOf(shown.name)}
             onVolume={(v) => setVolume(shown.name, v)}
           />
@@ -478,6 +504,9 @@ export function CallApp() {
           onVoices={(voices) => setPrefs({ voices })}
           onDevice={(kind, id) => void chooseDevice(kind, id)}
           onSpeaker={(speakerId) => setPrefs({ speakerId })}
+          onForceRelay={(forceRelay) => setPrefs({ forceRelay })}
+          paths={people.map((p) => ({ name: p.name, path: paths.get(p.id) ?? null }))}
+          relayAvailable={!!turn}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -583,8 +612,11 @@ function Tile({
   onSize,
   volume,
   onVolume,
+  relayed,
 }: {
   person: Person;
+  /** Their media comes through the iroh relay. */
+  relayed?: boolean;
   stream?: MediaStream | null;
   talking: boolean;
   mirrored?: boolean;
@@ -633,6 +665,11 @@ function Tile({
       <span className="tile-name">
         {person.name}
         {!person.mic && <MicIcon off />}
+        {relayed && (
+          <span className="tile-path" title="No direct connection: relayed through iroh">
+            via iroh
+          </span>
+        )}
       </span>
       {onVolume && (
         <label className="tile-volume" onClick={(e) => e.stopPropagation()} title={`${person.name}'s volume`}>
@@ -751,12 +788,18 @@ function CallSettings({
   onVoices,
   onDevice,
   onSpeaker,
+  onForceRelay,
+  paths,
+  relayAvailable,
   onClose,
 }: {
   prefs: CallPrefs;
   onVoices: (v: number) => void;
   onDevice: (kind: Kind, id: string) => void;
   onSpeaker: (id: string) => void;
+  onForceRelay: (on: boolean) => void;
+  paths: { name: string; path: Path | null }[];
+  relayAvailable: boolean;
   onClose: () => void;
 }) {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -799,6 +842,26 @@ function CallSettings({
           aria-label="Voices volume"
         />
       </label>
+      <details className="call-trouble">
+        <summary>Troubleshooting</summary>
+        <label className="call-check">
+          <input
+            type="checkbox"
+            checked={prefs.forceRelay}
+            disabled={!relayAvailable}
+            onChange={(e) => onForceRelay(e.target.checked)}
+          />
+          Always relay the call through iroh
+        </label>
+        <p className="call-hint">
+          Normally used only when your Macs can't connect directly. Turn on to test it, or if the call cuts out.
+        </p>
+        {paths.map((p) => (
+          <p key={p.name} className="call-path">
+            {p.name}: {p.path === "relay" ? "relayed through iroh" : p.path === "direct" ? "direct" : "connecting…"}
+          </p>
+        ))}
+      </details>
       <button className="call-settings-done" onClick={onClose}>
         Done
       </button>

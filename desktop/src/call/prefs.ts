@@ -15,6 +15,8 @@ export interface CallPrefs {
   micId: string;
   camId: string;
   speakerId: string;
+  /** Troubleshooting: always relay through iroh, even when direct works. */
+  forceRelay: boolean;
 }
 
 export const CALL_KEY = "watchsync.call";
@@ -30,6 +32,7 @@ export const DEFAULT_PREFS: CallPrefs = {
   micId: "",
   camId: "",
   speakerId: "",
+  forceRelay: false,
 };
 
 export function loadPrefs(): CallPrefs {
@@ -53,6 +56,7 @@ export function loadPrefs(): CallPrefs {
       micId: typeof p.micId === "string" ? p.micId : "",
       camId: typeof p.camId === "string" ? p.camId : "",
       speakerId: typeof p.speakerId === "string" ? p.speakerId : "",
+      forceRelay: p.forceRelay === true,
     };
   } catch {
     return DEFAULT_PREFS;

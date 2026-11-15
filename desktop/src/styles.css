@@ -1686,3 +1686,36 @@ html.call-window #root {
   font-weight: 500;
   cursor: pointer;
 }
+
+.tile-path {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgb(255 196 71 / 0.25);
+  color: #ffc447;
+  font-size: 10px;
+}
+
+.call-trouble summary {
+  color: var(--call-muted);
+  cursor: pointer;
+}
+
+.call-trouble[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.call-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.call-hint,
+.call-path {
+  color: var(--call-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}

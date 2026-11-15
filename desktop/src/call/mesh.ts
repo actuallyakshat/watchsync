@@ -24,7 +24,12 @@ export interface SignalData {
   /** The sender's connection, and the receiver's as the sender knows it. */
   session?: string;
   to_session?: string | null;
+  /** "I started over (new settings): start over too." */
+  restart?: boolean;
 }
+
+/** How a friend's media reaches us: straight, or relayed through iroh. */
+export type Path = "direct" | "relay";
 
 /** Someone missing from the room list this long is hung up on. */
 export const GRACE_MS = 45_000;
@@ -98,6 +103,29 @@ export class Mesh {
     private config: RTCConfiguration = { iceServers: ICE_SERVERS },
   ) {}
 
+  /** ICE servers and policy for connections. Changing them starts every
+   * connection over (the other side is told to, too). */
+  setConfig(config: RTCConfiguration) {
+    if (JSON.stringify(config) === JSON.stringify(this.config)) return;
+    this.config = config;
+    for (const id of [...this.links.keys()]) {
+      this.links.get(id)!.close();
+      this.links.delete(id);
+      const fresh = this.link(id);
+      // The offering side's fresh offer tells the other side; the answering
+      // side has to ask.
+      if (!(this.myId < id)) this.signal(id, { restart: true, session: fresh.session });
+    }
+    this.onChange();
+  }
+
+  /** How each friend's media gets here, as far as WebRTC says. */
+  async paths(): Promise<Map<string, Path | null>> {
+    const out = new Map<string, Path | null>();
+    await Promise.all([...this.links].map(async ([id, l]) => out.set(id, await l.path())));
+    return out;
+  }
+
   /** A new room (or none): drop every connection made as the old self. */
   setMyId(id: string) {
     if (id === this.myId) return;
@@ -148,6 +176,13 @@ export class Mesh {
       return;
     }
     let link = this.link(from);
+    if (data.restart) {
+      link.close();
+      this.links.delete(from);
+      this.link(from);
+      this.onChange();
+      return;
+    }
     // Their side started a new connection: start ours over to match.
     if (data.description?.type === "offer" && data.session && link.remoteSession && data.session !== link.remoteSession) {
       link.close();
@@ -318,6 +353,26 @@ class Link {
         await sender.setParameters(p);
       })
       .catch((err) => console.warn("couldn't set video quality for", this.id, err));
+  }
+
+  async path(): Promise<Path | null> {
+    if (this.closed || typeof this.pc.getStats !== "function") return null;
+    try {
+      const stats = await this.pc.getStats();
+      let pairId: string | undefined;
+      stats.forEach((s) => {
+        if (s.type === "transport" && s.selectedCandidatePairId) pairId = s.selectedCandidatePairId;
+      });
+      let pair: { localCandidateId?: string } | undefined;
+      stats.forEach((s) => {
+        if (s.type !== "candidate-pair") return;
+        if (pairId ? s.id === pairId : s.nominated && s.state === "succeeded") pair = s;
+      });
+      if (!pair?.localCandidateId) return null;
+      return stats.get(pair.localCandidateId)?.candidateType === "relay" ? "relay" : "direct";
+    } catch {
+      return null;
+    }
   }
 
   view(): Remote {

@@ -99,8 +99,20 @@ export class FakePC {
   private needPending = false;
   private remoteSet = false;
 
-  constructor() {
+  /** What getStats reports as the chosen path ("host", "relay"…). */
+  static candidateType: string | null = null;
+  constructor(public config: RTCConfiguration = {}) {
     FakePC.all.push(this);
+  }
+  async getStats() {
+    const t = FakePC.candidateType;
+    const m = new Map<string, Record<string, unknown>>();
+    if (t && this.connectionState === "connected") {
+      m.set("T", { id: "T", type: "transport", selectedCandidatePairId: "P" });
+      m.set("P", { id: "P", type: "candidate-pair", localCandidateId: "L", nominated: true, state: "succeeded" });
+      m.set("L", { id: "L", type: "local-candidate", candidateType: t });
+    }
+    return m;
   }
   addTransceiver(kind: string, init: { direction: string }) {
     const t = new FakeTransceiver(kind, init.direction);
@@ -170,5 +182,6 @@ export class FakePC {
 
 export function installFakeRtc() {
   FakePC.all = [];
+  FakePC.candidateType = null;
   Object.assign(globalThis, { RTCPeerConnection: FakePC, MediaStream: FakeStream });
 }

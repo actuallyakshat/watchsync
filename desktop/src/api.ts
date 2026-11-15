@@ -113,6 +113,8 @@ export interface Snapshot {
   mic: boolean;
   cam: boolean;
   player_fullscreen: boolean;
+  /** This Mac's fallback relay for the call (a TURN server on 127.0.0.1). */
+  turn: { urls: string; username: string; credential: string } | null;
 }
 
 /** WebRTC signalling from the person with endpoint id `from`. */
@@ -202,4 +204,5 @@ export const EMPTY: Snapshot = {
   mic: false,
   cam: false,
   player_fullscreen: false,
+  turn: null,
 };
