@@ -86,6 +86,10 @@ pub struct PeerInfo {
     pub mic: bool,
     #[serde(default)]
     pub cam: bool,
+    /// The room's short invite code (sent for the host), so whoever takes
+    /// over keeps the same invite working ("" = none, or an older app).
+    #[serde(default)]
+    pub invite: String,
 }
 
 /// This build's version, exchanged so mismatched apps can be flagged.
@@ -245,6 +249,152 @@ pub fn decode_code(code: &str) -> Result<EndpointAddr> {
     let cleaned = extract_code(code);
     let bytes = hex::decode(cleaned).map_err(|_| anyhow!("That doesn't look like a room code"))?;
     serde_json::from_slice(&bytes).map_err(|_| anyhow!("That doesn't look like a room code"))
+}
+
+// ------------------------------------------------------------ invite codes
+//
+// The address code above is a few hundred characters, too long to share
+// comfortably. Invites use a short code instead ("abc-defg-hij"), looked up
+// on n0's public pkarr server (the one iroh already uses to find endpoints).
+// The code is hashed into a signing key; the host signs a small record under
+// it naming its endpoint id and relay. Anyone with the code can read the
+// record, and could also sign a newer one to send later joiners elsewhere
+// (the long link couldn't be redirected). Fine among friends; 47 random bits
+// keep strangers from guessing a code.
+
+/// Letters in an invite code (3-4-3, like "abc-defg-hij"): about 47 bits.
+const INVITE_LEN: usize = 10;
+/// How often a host republishes its invite record, and retries a failed one.
+const INVITE_REPUBLISH: std::time::Duration = std::time::Duration::from_secs(4 * 60);
+const INVITE_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn format_invite(letters: &str) -> String {
+    format!("{}-{}-{}", &letters[..3], &letters[3..7], &letters[7..])
+}
+
+/// A fresh random invite code.
+pub fn new_invite() -> String {
+    let mut letters = String::new();
+    while letters.len() < INVITE_LEN {
+        for b in iroh::SecretKey::generate().to_bytes() {
+            // 234 = 9 × 26: skip the rest so every letter is equally likely.
+            if b < 234 && letters.len() < INVITE_LEN {
+                letters.push((b'a' + b % 26) as char);
+            }
+        }
+    }
+    format_invite(&letters)
+}
+
+/// The invite code in `input` (a link or the bare code, any case, hyphens
+/// optional), as "abc-defg-hij". `None` if it's an address code instead.
+pub fn parse_invite(input: &str) -> Option<String> {
+    let letters: String = extract_code(input)
+        .chars()
+        .filter(|c| *c != '-')
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    (letters.len() == INVITE_LEN && letters.bytes().all(|b| b.is_ascii_lowercase()))
+        .then(|| format_invite(&letters))
+}
+
+/// The key an invite code's record is signed with.
+fn invite_key(invite: &str) -> iroh::SecretKey {
+    use sha2::Digest as _;
+    let h = sha2::Sha256::digest(format!("watchsync/invite/v1/{invite}").as_bytes());
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(&h);
+    iroh::SecretKey::from_bytes(&bytes)
+}
+
+fn pkarr_client(endpoint: &Endpoint) -> Result<iroh::address_lookup::PkarrRelayClient> {
+    Ok(iroh::address_lookup::PkarrRelayClient::new(
+        iroh::address_lookup::N0_DNS_PKARR_RELAY_PROD.parse().map_err(err)?,
+        endpoint.tls_config().clone(),
+        endpoint.dns_resolver().map_err(err)?.clone(),
+    ))
+}
+
+/// Sign and upload the record pointing `invite` at `host`.
+async fn publish_invite_once(
+    client: &iroh::address_lookup::PkarrRelayClient,
+    invite: &str,
+    host: &EndpointAddr,
+) -> Result<()> {
+    use iroh::address_lookup::{EndpointData, EndpointInfo, UserData};
+    // The relay is enough to reach the host (iroh finds direct paths from
+    // there), and keeps the record well inside one DNS packet.
+    let relays = host.addrs.iter().filter(|a| a.is_relay()).cloned().collect();
+    let host_id = UserData::try_from(host.id.to_z32()).map_err(err)?;
+    let data = EndpointData::new(relays).with_user_data(host_id);
+    let key = invite_key(invite);
+    let packet = EndpointInfo::from_parts(key.public(), data)
+        .to_pkarr_signed_packet(&key, 30)
+        .map_err(err)?;
+    client.publish(&packet).await.map_err(err)
+}
+
+/// Keeps an invite code pointing at this Mac until dropped.
+pub struct InvitePublisher(tokio::task::JoinHandle<()>);
+
+impl Drop for InvitePublisher {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Start publishing `invite` for `endpoint`, republishing every few minutes
+/// (friends may join hours in). The receiver fires on the first success.
+pub fn publish_invite(
+    endpoint: &Endpoint,
+    invite: &str,
+) -> Result<(InvitePublisher, tokio::sync::oneshot::Receiver<()>)> {
+    let client = pkarr_client(endpoint)?;
+    let (endpoint, invite) = (endpoint.clone(), invite.to_string());
+    let (done, first) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let mut done = Some(done);
+        loop {
+            // Someone else took the code over (a host back from sleep, after
+            // its successor republished): stop, rather than flip it back.
+            if done.is_none()
+                && let Ok(host) = lookup_invite(&client, &invite).await
+                && host.id != endpoint.id()
+            {
+                break;
+            }
+            let ok = publish_invite_once(&client, &invite, &endpoint.addr()).await.is_ok();
+            if ok && let Some(done) = done.take() {
+                let _ = done.send(());
+            }
+            tokio::time::sleep(if ok { INVITE_REPUBLISH } else { INVITE_RETRY }).await;
+        }
+    });
+    Ok((InvitePublisher(task), first))
+}
+
+/// The host an invite code currently points at.
+async fn lookup_invite(
+    client: &iroh::address_lookup::PkarrRelayClient,
+    invite: &str,
+) -> Result<EndpointAddr> {
+    use iroh::address_lookup::EndpointInfo;
+    let not_found = || anyhow!("no room has the code {invite}. Check it, or ask for a new invite");
+    let packet = client
+        .resolve(invite_key(invite).public())
+        .await
+        .map_err(|_| not_found())?;
+    let info = EndpointInfo::from_pkarr_signed_packet(&packet).map_err(|_| not_found())?;
+    let id = info
+        .user_data()
+        .and_then(|d| iroh::EndpointId::from_z32(d.as_ref()).ok())
+        .ok_or_else(not_found)?;
+    Ok(EndpointAddr::from_parts(id, info.addrs().cloned()))
+}
+
+/// Look up the host behind an invite code; returns its address code.
+pub async fn resolve_invite(endpoint: &Endpoint, invite: &str) -> Result<String> {
+    Ok(encode_code(&lookup_invite(&pkarr_client(endpoint)?, invite).await?))
 }
 
 /// Spawn a task that writes queued messages to the stream as JSON lines.
@@ -442,6 +592,48 @@ mod tests {
             &invite_link(code),
         ] {
             assert_eq!(extract_code(input), code, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn invite_codes_are_three_four_three_letters() {
+        let a = new_invite();
+        assert_eq!(a.len(), 12, "{a}");
+        assert_eq!(a.split('-').map(str::len).collect::<Vec<_>>(), [3, 4, 3], "{a}");
+        assert!(a.chars().all(|c| c == '-' || c.is_ascii_lowercase()), "{a}");
+        assert_eq!(parse_invite(&a).as_deref(), Some(a.as_str()));
+        assert_ne!(a, new_invite());
+    }
+
+    #[test]
+    fn invite_codes_are_found_however_they_are_passed_on() {
+        let code = "abc-defg-hij";
+        for input in [
+            "abc-defg-hij",
+            "  ABC-DEFG-HIJ\n",
+            "abcdefghij",
+            "abc defg hij",
+            "watchsync://join/abc-defg-hij",
+            "watchsync://join/abc-defg-hij/",
+            &invite_link(code),
+            "Join me! https://actuallyakshat.github.io/watchsync/join/#abc-defg-hij",
+        ] {
+            assert_eq!(parse_invite(input).as_deref(), Some(code), "{input:?}");
+        }
+        // Every spelling signs with the same key.
+        let key = |s: &str| invite_key(&parse_invite(s).unwrap()).public();
+        assert_eq!(key("ABCDEFGHIJ"), key("abc-defg-hij"));
+        assert_ne!(key("abc-defg-hik"), key("abc-defg-hij"));
+    }
+
+    #[test]
+    fn address_codes_are_not_invite_codes() {
+        let secret = iroh::SecretKey::from_bytes(&[7u8; 32]);
+        let code = encode_code(&EndpointAddr::from(secret.public()));
+        assert_eq!(parse_invite(&code), None);
+        assert_eq!(parse_invite(&invite_link(&code)), None);
+        for input in ["abc-defg-hi", "abc-defg-hijk", "abc-def1-hij", "", "7b2269"] {
+            assert_eq!(parse_invite(input), None, "{input:?}");
         }
     }
 

@@ -27,8 +27,11 @@ Both also install WatchSync's helper apps, mpv (the video player) and croc
   arrow keys, seek bar).
 - **Stays in sync**: players drift-correct by nudging speed ±5% (inaudible),
   and jump only when more than 1.5 s off.
-- **Invite links**: *Copy invite link* gives a link friends tap to open
-  WatchSync straight into the room.
+- **Invite links**: *Copy invite link* gives a short link friends tap to
+  open WatchSync straight into the room, ending in a code like
+  `abc-defg-hij` that also works typed into *Join*. The code is looked up on
+  iroh's public address server, and stays the room's code if the host
+  changes.
 - **Survives trouble**: if your connection blinks, you rejoin on your own
   while the movie keeps playing. If the host leaves or their Mac goes to
   sleep, the next person who joined takes over as host.
