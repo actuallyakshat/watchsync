@@ -136,6 +136,11 @@ export function CallApp() {
             if (kind === "audio") {
               rawMic.current = captured;
               micChain.current = chain;
+              // If processing stops mid-call, send the plain mic until it's back.
+              chain?.onRunning((running) => {
+                if (micChain.current !== chain || !rawMic.current) return;
+                m.setTrack("audio", running ? chain.track : rawMic.current);
+              });
             }
             m.setTrack(kind, track);
           }
@@ -539,7 +544,9 @@ export function CallApp() {
           onMicInput={setMicInput}
           micMeter={() => {
             const c = micChain.current;
-            return mic && c ? { level: c.level(), open: c.open(), thresholdDb: c.thresholdDb() } : null;
+            if (!mic) return null;
+            if (!c || !c.running()) return "unprocessed";
+            return { level: c.level(), open: c.open(), thresholdDb: c.thresholdDb() };
           }}
           paths={people.map((p) => ({ name: p.name, path: paths.get(p.id) ?? null }))}
           relayAvailable={!!turn}
@@ -837,8 +844,9 @@ function CallSettings({
   onSpeaker: (id: string) => void;
   onForceRelay: (on: boolean) => void;
   onMicInput: (s: MicSettings) => void;
-  /** Live input level and gate state, while the mic is on and processed. */
-  micMeter: () => { level: number; open: boolean; thresholdDb: number } | null;
+  /** Live input level and gate state; "unprocessed" if the mic is sent as
+   * it is; null with the mic off. */
+  micMeter: () => MeterReading;
   paths: { name: string; path: Path | null }[];
   relayAvailable: boolean;
   onClose: () => void;
@@ -911,6 +919,8 @@ function CallSettings({
   );
 }
 
+type MeterReading = { level: number; open: boolean; thresholdDb: number } | "unprocessed" | null;
+
 const dbOf = (level: number) => 20 * Math.log10(Math.max(level, 1e-6));
 /** Where a level sits on the meter, 0–100 (−70 dB to 0 dB). */
 const meterPct = (db: number) => Math.min(100, Math.max(0, ((db + 70) / 70) * 100));
@@ -923,9 +933,10 @@ function MicInput({
 }: {
   settings: MicSettings;
   onChange: (s: MicSettings) => void;
-  meter: () => { level: number; open: boolean; thresholdDb: number } | null;
+  meter: () => MeterReading;
 }) {
-  const [live, setLive] = useState(meter);
+  const [reading, setLive] = useState(meter);
+  const live = typeof reading === "object" ? reading : null;
   const read = useRef(meter);
   read.current = meter;
   useEffect(() => {
@@ -942,7 +953,13 @@ function MicInput({
         {s.suppress && threshold !== null && <b style={{ left: `${meterPct(threshold)}%` }} />}
       </div>
       <p className="call-hint" aria-live="polite">
-        {!live ? "Turn your mic on to test it." : live.open ? "Sending your voice" : "Quiet: nothing sent"}
+        {reading === "unprocessed"
+          ? "Mic processing isn't available right now: sending your mic as it is."
+          : !live
+            ? "Turn your mic on to test it."
+            : live.open
+              ? "Sending your voice"
+              : "Quiet: nothing sent"}
       </p>
       <label className="call-check">
         <input type="checkbox" checked={s.suppress} onChange={(e) => set({ suppress: e.target.checked })} />

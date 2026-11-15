@@ -281,3 +281,71 @@ test("the mic is cleaned up out of the box, and can be tuned", async () => {
   expect(mic.constraints.at(-1)).toMatchObject({ noiseSuppression: false });
   expect(screen.queryByRole("checkbox", { name: "Set sensitivity automatically" })).toBeNull();
 });
+
+/** A pretend Web Audio engine that can stop, like macOS stops it on an
+ * output change (plugging in headphones). */
+class FakeAudio {
+  static last: FakeAudio;
+  state: string = "running";
+  resumesTo = "running";
+  onstatechange: (() => void) | null = null;
+  out = new FakeTrack("audio");
+  closed = false;
+  audioWorklet = { addModule: async () => {} };
+  currentTime = 0;
+  constructor() {
+    FakeAudio.last = this;
+  }
+  async resume() {
+    this.state = this.resumesTo;
+  }
+  async close() {
+    this.closed = true;
+  }
+  private node = () => ({ connect: (n: unknown) => n, disconnect: () => {} });
+  createMediaStreamSource = this.node;
+  createBiquadFilter = () => ({ ...this.node(), type: "", frequency: { value: 0 } });
+  createGain = () => ({ ...this.node(), gain: { setTargetAtTime: () => {} } });
+  createMediaStreamDestination = () => ({ ...this.node(), stream: new FakeStream([this.out]) });
+  /** The engine stops (or starts again). */
+  set(state: string) {
+    this.state = state;
+    this.onstatechange?.();
+  }
+}
+class FakeWorkletNode {
+  port = { postMessage: () => {}, onmessage: null };
+  connect = (n: unknown) => n;
+}
+
+test("the processed mic is sent, and the plain mic while processing is stopped", async () => {
+  vi.stubGlobal("AudioContext", FakeAudio);
+  vi.stubGlobal("AudioWorkletNode", FakeWorkletNode);
+  await start();
+  await waitFor(() => expect(FakePC.all).toHaveLength(1));
+  const sender = () => FakePC.all[0].transceivers[0].sender.track;
+  await userEvent.click(screen.getByRole("button", { name: "Turn your mic on" }));
+  const audio = FakeAudio.last;
+  const raw = (await getUserMedia.mock.results[0].value).getTracks()[0] as FakeTrack;
+  await waitFor(() => expect(sender()).toBe(audio.out));
+
+  // Headphones plugged in: the engine stops and won't restart at once.
+  audio.resumesTo = "suspended";
+  act(() => audio.set("suspended"));
+  await waitFor(() => expect(sender()).toBe(raw), { timeout: 2000 });
+  await userEvent.click(screen.getByRole("button", { name: "Expand the call" }));
+  await userEvent.click(screen.getByRole("button", { name: "Call settings" }));
+  expect(await screen.findByText(/sending your mic as it is/)).toBeInTheDocument();
+
+  // It comes back: processing again.
+  act(() => audio.set("running"));
+  await waitFor(() => expect(sender()).toBe(audio.out));
+  expect(await screen.findByText("Quiet: nothing sent")).toBeInTheDocument();
+
+  // Mic off lets go of everything.
+  await userEvent.click(screen.getByRole("button", { name: "Mute your mic" }));
+  await waitFor(() => expect(raw.readyState).toBe("ended"));
+  expect(audio.out.readyState).toBe("ended");
+  expect(audio.closed).toBe(true);
+  expect(sender()).toBeNull();
+});

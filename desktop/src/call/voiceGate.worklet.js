@@ -67,10 +67,15 @@ class VoiceGate extends AudioWorkletProcessor {
     this.floor = dbToEnergy(-70);
     this.pieceMin = Infinity;
     this.pieceBlocks = 0;
-    this.mins = [];
+    // Nothing below allocates while running: the audio thread must not
+    // pause for garbage collection.
+    this.mins = new Float64Array(FLOOR_PIECES).fill(Infinity);
+    this.minAt = 0;
+    this.recent = new Uint8Array(64);
+    this.recentAt = 0;
+    this.loudCount = 0;
     this.delay = new Float32Array(Math.max(1, Math.round(LOOKAHEAD_S * sampleRate)));
     this.pos = 0;
-    this.recent = [];
     this.gain = 0;
     this.holdLeft = 0;
     this.attack = 1 - Math.exp(-1 / (0.005 * sampleRate));
@@ -103,22 +108,28 @@ class VoiceGate extends AudioWorkletProcessor {
     // a rise smoothly.
     this.pieceMin = Math.min(this.pieceMin, voice);
     if (++this.pieceBlocks >= Math.max(1, Math.round((FLOOR_PIECE_S * sampleRate) / n))) {
-      this.mins.push(this.pieceMin);
-      if (this.mins.length > FLOOR_PIECES) this.mins.shift();
+      this.mins[this.minAt] = this.pieceMin;
+      this.minAt = (this.minAt + 1) % FLOOR_PIECES;
       this.pieceMin = Infinity;
       this.pieceBlocks = 0;
     }
-    const now = Math.min(this.pieceMin, ...this.mins);
+    let now = this.pieceMin;
+    for (let i = 0; i < FLOOR_PIECES; i++) if (this.mins[i] < now) now = this.mins[i];
     if (now < this.floor) this.floor = now;
     else this.floor += (now - this.floor) * 0.01;
     this.floor = Math.max(this.floor, dbToEnergy(FLOOR_MIN_DB - 20));
 
     const threshold = this.auto ? Math.max(this.floor * ABOVE_FLOOR, dbToEnergy(FLOOR_MIN_DB)) : dbToEnergy(this.thresholdDb);
     const loud = voice > threshold && voice > full * VOICE_SHARE;
-    const blocks = Math.max(1, Math.round((WINDOW_S * sampleRate) / n));
-    this.recent.push(loud);
-    if (this.recent.length > blocks) this.recent.shift();
-    const voiced = this.recent.filter(Boolean).length >= VOICED_SHARE * blocks;
+    // How many of the last `blocks` blocks were loud (a ring, kept counted).
+    const blocks = Math.min(this.recent.length, Math.max(1, Math.round((WINDOW_S * sampleRate) / n)));
+    const leaving = (this.recentAt - blocks + this.recent.length) % this.recent.length;
+    this.loudCount -= this.recent[leaving];
+    this.recent[leaving] = 0;
+    this.recent[this.recentAt] = loud ? 1 : 0;
+    this.loudCount += this.recent[this.recentAt];
+    this.recentAt = (this.recentAt + 1) % this.recent.length;
+    const voiced = this.loudCount >= VOICED_SHARE * blocks;
     if (voiced) this.holdLeft = HOLD_S * sampleRate;
     else this.holdLeft = Math.max(0, this.holdLeft - n);
     const open = !this.suppress || this.holdLeft > 0;
@@ -136,7 +147,8 @@ class VoiceGate extends AudioWorkletProcessor {
     this.sinceReport += n;
     if (this.sinceReport >= sampleRate / 20) {
       this.sinceReport = 0;
-      this.port.postMessage({ level: Math.sqrt(full), open, thresholdDb: energyToDb(threshold) });
+      // The voice-band level, the same thing the threshold is compared to.
+      this.port.postMessage({ level: Math.sqrt(voice), open, thresholdDb: energyToDb(threshold) });
     }
     return true;
   }
