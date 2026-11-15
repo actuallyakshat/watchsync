@@ -1,5 +1,11 @@
 Watch the same movie with friends on separate Macs, in sync. Everyone plays their own copy; pause, play or seek on any Mac and it happens for everyone. No accounts.
 
+## New in 0.5.2: a steadier room
+
+- **No more "left" then "joined"** popping up mid-movie when nobody went anywhere. A busy or briefly throttled Mac no longer looks like it dropped out, and if someone's connection really does blink and come straight back, nobody is told.
+- **A frozen host gets replaced**: if the host's app stops responding, the next person takes over instead of everyone waiting on it.
+- **Handing over is sturdier**: if the person the host handed the room to has also dropped off, the next in line takes over.
+
 ## New in 0.5.1: a better call
 
 - **Short invite codes**, like `abc-defg-hij`, instead of a long link. Long links still work.
