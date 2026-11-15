@@ -1599,3 +1599,90 @@ html.call-window #root {
   height: 16px;
   cursor: nwse-resize;
 }
+
+.call-btn.warn {
+  color: #ffc447;
+  background: rgb(255 196 71 / 0.16);
+}
+
+.call-error.warn {
+  align-items: center;
+  background: rgb(60 44 10 / 0.95);
+}
+
+.call-error.warn > svg {
+  flex: none;
+  color: #ffc447;
+}
+
+.tile-volume {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 12px;
+  background: rgb(0 0 0 / 0.55);
+  opacity: 0;
+  transition: opacity 0.15s var(--ease);
+}
+
+.tile:hover .tile-volume,
+.tile-volume:focus-within {
+  opacity: 1;
+}
+
+.tile-volume input {
+  width: 70px;
+  accent-color: var(--call-ink);
+}
+
+.call-settings {
+  position: absolute;
+  inset: 8px 8px 52px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--call-line);
+  border-radius: 10px;
+  background: rgb(24 24 27 / 0.97);
+}
+
+.call-setting {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  align-items: center;
+  gap: 8px;
+  color: var(--call-muted);
+}
+
+.call-setting select {
+  min-width: 0;
+  padding: 3px 4px;
+  border: 1px solid var(--call-line);
+  border-radius: 6px;
+  background: #18181b;
+  color: var(--call-ink);
+  font: inherit;
+}
+
+.call-setting input[type="range"] {
+  accent-color: var(--call-ink);
+}
+
+.call-settings-done {
+  align-self: flex-end;
+  margin-top: auto;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--call-ink);
+  color: #18181b;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}

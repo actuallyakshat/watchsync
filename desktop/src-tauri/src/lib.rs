@@ -3,6 +3,7 @@
 //! and receives a `snapshot` event whenever something changes.
 
 mod hotkeys;
+mod output;
 
 use serde::Serialize;
 use tauri::{Emitter, Manager, RunEvent, State};
@@ -118,7 +119,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Bridge { cmd: cmd_tx })
         .manage(hotkeys::Hotkeys::default())
-        .invoke_handler(tauri::generate_handler![send, player_setup, install_player, install_croc, show_call, hotkeys::set_call_shortcuts])
+        .invoke_handler(tauri::generate_handler![send, player_setup, install_player, install_croc, show_call, hotkeys::set_call_shortcuts, output::output_is_speakers])
         .setup(move |app| {
             // Push every engine snapshot to the window.
             let handle = app.handle().clone();

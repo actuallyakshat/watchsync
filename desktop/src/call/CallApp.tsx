@@ -3,13 +3,25 @@
 // as a small strip (who's here, mic, camera) or expanded to show video. It
 // stays on top of everything, including the movie in fullscreen.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EMPTY, onCallExpand, onCallShortcut, onSignal, onSnapshot, send, type Snapshot } from "../api";
-import { CamIcon, CollapseIcon, ExpandIcon, GridIcon, MicIcon, PinIcon, SelfIcon, SpeakerIcon } from "../components/Icons";
+import { EMPTY, onCallExpand, onCallShortcut, onSignal, onSnapshot, outputIsSpeakers, send, type Snapshot } from "../api";
+import {
+  CamIcon,
+  CollapseIcon,
+  ExpandIcon,
+  GearIcon,
+  GridIcon,
+  HeadphonesIcon,
+  MicIcon,
+  PinIcon,
+  SelfIcon,
+  SpeakerIcon,
+  VolumeIcon,
+} from "../components/Icons";
 import { Mesh, type Kind, type Remote, type SignalData, type Size } from "./mesh";
 import { loadPrefs, savePrefs, type CallPrefs } from "./prefs";
 import { isTalking, pickSpeaker, track, type Talk } from "./speaker";
 import { PILL_HEIGHT, pillWidth } from "./sizes";
-import { onResized, setWindowSize, startResize } from "./win";
+import { onResized, rememberPosition, restorePosition, setWindowSize, startResize } from "./win";
 
 const AUDIO: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
 const VIDEO: MediaTrackConstraints = {
@@ -17,6 +29,10 @@ const VIDEO: MediaTrackConstraints = {
   height: { ideal: 1080 },
   frameRate: { ideal: 30, max: 30 },
 };
+/** Asks the speakers question this often while your mic is on. */
+const OUTPUT_CHECK_MS = 5000;
+/** Choosing where call sound plays needs setSinkId, which WebKit may lack. */
+const CAN_PICK_SPEAKER = typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
 
 type Mode = "pill" | "tiles";
 
@@ -61,6 +77,12 @@ export function CallApp() {
   /** You shrank the call yourself in this room: cameras don't expand it. */
   const shrunk = useRef(false);
 
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [onSpeakers, setOnSpeakers] = useState(false);
+  const [speakersDismissed, setSpeakersDismissed] = useState(false);
+
   const setPrefs = useCallback((change: Partial<CallPrefs>) => {
     setPrefsState((p) => {
       const next = { ...p, ...change };
@@ -76,7 +98,9 @@ export function CallApp() {
       onSnapshot(setSnap),
       onSignal(({ from, data }) => void m.onSignal(from, data as SignalData)),
       onCallExpand(() => setMode("tiles")),
+      rememberPosition(),
     ];
+    void restorePosition(pillWidth(0));
     return () => {
       m.close();
       for (const k of ["audio", "video"] as Kind[]) m.track(k)?.stop();
@@ -93,7 +117,7 @@ export function CallApp() {
       let track: MediaStreamTrack | null = old;
       if (on && !old) {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia(kind === "audio" ? { audio: AUDIO } : { video: VIDEO });
+          const stream = await capture(kind, kind === "audio" ? prefsRef.current.micId : prefsRef.current.camId);
           track = (kind === "audio" ? stream.getAudioTracks() : stream.getVideoTracks())[0] ?? null;
           if (!inRoomRef.current || m.track(kind)) {
             // Left the room (or turned on twice) while asking.
@@ -133,6 +157,19 @@ export function CallApp() {
     [setPrefs],
   );
 
+  /** Use a different camera or mic (switching now if it's on). */
+  const chooseDevice = useCallback(
+    async (kind: Kind, id: string) => {
+      setPrefs(kind === "audio" ? { micId: id } : { camId: id });
+      prefsRef.current = { ...prefsRef.current, ...(kind === "audio" ? { micId: id } : { camId: id }) };
+      if (mesh.current!.track(kind)) {
+        await setDevice(kind, false, false);
+        await setDevice(kind, true, false);
+      }
+    },
+    [setDevice, setPrefs],
+  );
+
   const toggle = useCallback(
     async (kind: Kind) => {
       const on = !(kind === "audio" ? mic : cam);
@@ -143,6 +180,22 @@ export function CallApp() {
     },
     [mic, cam, setDevice, snap.player_open],
   );
+
+  // On speakers with the mic on, friends hear the movie twice: say so.
+  useEffect(() => {
+    if (!inRoom || !mic) return setOnSpeakers(false);
+    let live = true;
+    const poll = () =>
+      void outputIsSpeakers()
+        .then((s) => live && setOnSpeakers(s === true))
+        .catch(() => {});
+    poll();
+    const timer = setInterval(poll, OUTPUT_CHECK_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [inRoom, mic]);
 
   // ⌥⌘M / ⌥⌘V (or whatever's set) from any app.
   const toggleRef = useRef(toggle);
@@ -169,6 +222,8 @@ export function CallApp() {
       setPinned(null);
       setError(null);
       setBlocked(false);
+      setSettingsOpen(false);
+      setSpeakersDismissed(false);
     }
   }, [inRoom, setDevice]);
 
@@ -218,10 +273,10 @@ export function CallApp() {
   // ------------------------------------------------------------ window
   useEffect(() => {
     if (mode === "tiles") void setWindowSize(prefs.size.width, prefs.size.height);
-    else void setWindowSize(pillWidth(people.length), PILL_HEIGHT);
+    else void setWindowSize(pillWidth(people.length) + (onSpeakers && !speakersDismissed ? 34 : 0), PILL_HEIGHT);
     // The saved size only matters when expanding; resizes save it below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, people.length]);
+  }, [mode, people.length, onSpeakers, speakersDismissed]);
 
   useEffect(() => {
     const un = onResized((width, height) => {
@@ -287,7 +342,22 @@ export function CallApp() {
   const talking = (id: string) => isTalking(talk, id, now);
   // Everyone connected is heard, even someone briefly missing from the room
   // list while their connection to the host blinks.
-  const sound = remotes.map((r) => <RemoteAudio key={r.id} remote={r} audios={audios.current} onBlocked={onBlocked} />);
+  const names = new Map(snap.peers.map((p) => [p.id, p.name]));
+  const lastNames = useRef(new Map<string, string>());
+  for (const [id, n] of names) lastNames.current.set(id, n);
+  const volumeOf = (name: string | undefined) => (name !== undefined ? (prefs.volumes[name] ?? 1) : 1);
+  const setVolume = (name: string, v: number) => setPrefs({ volumes: { ...prefs.volumes, [name]: v } });
+  const sound = remotes.map((r) => (
+    <RemoteAudio
+      key={r.id}
+      remote={r}
+      audios={audios.current}
+      onBlocked={onBlocked}
+      volume={prefs.voices * volumeOf(lastNames.current.get(r.id))}
+      sinkId={prefs.speakerId}
+    />
+  ));
+  const speakersWarning = onSpeakers && !speakersDismissed;
 
   if (!inRoom) return <div className="call" />;
 
@@ -312,6 +382,16 @@ export function CallApp() {
             </span>
           ))}
         </div>
+        {speakersWarning && (
+          <button
+            className="call-btn warn"
+            onClick={() => setMode("tiles")}
+            aria-label="You're on speakers"
+            title="You're on speakers: friends hear the movie through your mic. Use headphones."
+          >
+            <HeadphonesIcon />
+          </button>
+        )}
         {blocked ? (
           <button className="call-btn wide" onClick={hearCall}>
             Click to hear
@@ -340,7 +420,15 @@ export function CallApp() {
       {prefs.layout === "grid" || !shown ? (
         <div className="grid" style={{ ["--cols" as string]: Math.ceil(Math.sqrt(people.length + 1)) }} data-tauri-drag-region>
           {people.map((p) => (
-            <Tile key={p.id} person={p} talking={talking(p.id)} onSize={onSize} onClick={() => (setPinned(p.id), setPrefs({ layout: "speaker" }))} />
+            <Tile
+              key={p.id}
+              person={p}
+              talking={talking(p.id)}
+              onSize={onSize}
+              volume={volumeOf(p.name)}
+              onVolume={(v) => setVolume(p.name, v)}
+              onClick={() => (setPinned(p.id), setPrefs({ layout: "speaker" }))}
+            />
           ))}
           <Tile person={self} stream={selfStream} talking={mic && talking("")} mirrored />
           {people.length === 0 && (
@@ -351,7 +439,14 @@ export function CallApp() {
         </div>
       ) : (
         <div className="speaker" data-tauri-drag-region>
-          <Tile key={shown.id} person={shown} talking={talking(shown.id)} onSize={onSize} />
+          <Tile
+            key={shown.id}
+            person={shown}
+            talking={talking(shown.id)}
+            onSize={onSize}
+            volume={volumeOf(shown.name)}
+            onVolume={(v) => setVolume(shown.name, v)}
+          />
           {prefs.selfView && cam && (
             <div className="self-corner">
               <Tile person={self} stream={selfStream} talking={false} mirrored />
@@ -367,6 +462,24 @@ export function CallApp() {
             ×
           </button>
         </div>
+      )}
+      {speakersWarning && !error && (
+        <div className="call-error warn" role="status">
+          <HeadphonesIcon />
+          <span>You're on speakers, so friends hear the movie through your mic. Use headphones.</span>
+          <button className="call-btn" onClick={() => setSpeakersDismissed(true)} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      )}
+      {settingsOpen && (
+        <CallSettings
+          prefs={prefs}
+          onVoices={(voices) => setPrefs({ voices })}
+          onDevice={(kind, id) => void chooseDevice(kind, id)}
+          onSpeaker={(speakerId) => setPrefs({ speakerId })}
+          onClose={() => setSettingsOpen(false)}
+        />
       )}
       {blocked && (
         <button className="call-hear" onClick={hearCall}>
@@ -400,6 +513,15 @@ export function CallApp() {
             <SelfIcon />
           </button>
         )}
+        <button
+          className={`call-btn ${settingsOpen ? "on" : ""}`}
+          onClick={() => setSettingsOpen((o) => !o)}
+          aria-label="Call settings"
+          aria-pressed={settingsOpen}
+          title="Camera, mic and volume"
+        >
+          <GearIcon />
+        </button>
         <button
           className="call-btn"
           onClick={() => {
@@ -459,12 +581,17 @@ function Tile({
   mirrored,
   onClick,
   onSize,
+  volume,
+  onVolume,
 }: {
   person: Person;
   stream?: MediaStream | null;
   talking: boolean;
   mirrored?: boolean;
   onClick?: () => void;
+  /** Their own volume (0–1), for friends' tiles. */
+  volume?: number;
+  onVolume?: (v: number) => void;
   /** How big this person is shown, in device pixels (0×0 once gone). */
   onSize?: (id: string, size: Size) => void;
 }) {
@@ -507,13 +634,46 @@ function Tile({
         {person.name}
         {!person.mic && <MicIcon off />}
       </span>
+      {onVolume && (
+        <label className="tile-volume" onClick={(e) => e.stopPropagation()} title={`${person.name}'s volume`}>
+          <VolumeIcon />
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={volume ?? 1}
+            onChange={(e) => onVolume(Number(e.target.value))}
+            aria-label={`${person.name}'s volume`}
+          />
+        </label>
+      )}
     </div>
   );
 }
 
 /** Plays one person's voice. */
-function RemoteAudio({ remote, audios, onBlocked }: { remote: Remote; audios: Set<HTMLAudioElement>; onBlocked: () => void }) {
+function RemoteAudio({
+  remote,
+  audios,
+  onBlocked,
+  volume,
+  sinkId,
+}: {
+  remote: Remote;
+  audios: Set<HTMLAudioElement>;
+  onBlocked: () => void;
+  volume: number;
+  sinkId: string;
+}) {
   const el = useRef<HTMLAudioElement>(null);
+  useEffect(() => {
+    if (el.current) el.current.volume = Math.min(1, Math.max(0, volume));
+  }, [volume]);
+  useEffect(() => {
+    const a = el.current as (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }) | null;
+    if (CAN_PICK_SPEAKER && a?.setSinkId) void a.setSinkId(sinkId).catch(() => {});
+  }, [sinkId]);
   useEffect(() => {
     const a = el.current;
     if (!a) return;
@@ -569,4 +729,79 @@ function deviceError(kind: Kind, e: unknown): string {
   if (name === "NotFoundError" || name === "OverconstrainedError") return `No ${what} found.`;
   if (name === "NotReadableError") return `Your ${what} is busy in another app.`;
   return `Couldn't turn on your ${what}.`;
+}
+
+/** Camera or mic, the chosen one if it's still there, else the default. */
+async function capture(kind: Kind, deviceId: string): Promise<MediaStream> {
+  const base = kind === "audio" ? AUDIO : VIDEO;
+  const request = (c: MediaTrackConstraints) => navigator.mediaDevices.getUserMedia(kind === "audio" ? { audio: c } : { video: c });
+  if (!deviceId) return request(base);
+  try {
+    return await request({ ...base, deviceId: { exact: deviceId } });
+  } catch (e) {
+    const gone = e instanceof DOMException && (e.name === "OverconstrainedError" || e.name === "NotFoundError");
+    if (!gone) throw e;
+    return request(base); // unplugged: use the default
+  }
+}
+
+/** Camera, mic (and speaker, where WebKit allows) and how loud voices are. */
+function CallSettings({
+  prefs,
+  onVoices,
+  onDevice,
+  onSpeaker,
+  onClose,
+}: {
+  prefs: CallPrefs;
+  onVoices: (v: number) => void;
+  onDevice: (kind: Kind, id: string) => void;
+  onSpeaker: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  useEffect(() => {
+    const md = navigator.mediaDevices;
+    if (!md?.enumerateDevices) return;
+    const load = () => void md.enumerateDevices().then(setDevices).catch(() => {});
+    load();
+    md.addEventListener?.("devicechange", load);
+    return () => md.removeEventListener?.("devicechange", load);
+  }, []);
+  const of = (kind: MediaDeviceKind) => devices.filter((d) => d.kind === kind && d.deviceId && d.deviceId !== "default");
+  const select = (label: string, kind: MediaDeviceKind, value: string, onChange: (id: string) => void) => (
+    <label className="call-setting">
+      <span>{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={label}>
+        <option value="">System default</option>
+        {of(kind).map((d, i) => (
+          <option key={d.deviceId} value={d.deviceId}>
+            {d.label || `${label} ${i + 1}`}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+  return (
+    <div className="call-settings" role="dialog" aria-label="Call settings">
+      {select("Camera", "videoinput", prefs.camId, (id) => onDevice("video", id))}
+      {select("Microphone", "audioinput", prefs.micId, (id) => onDevice("audio", id))}
+      {CAN_PICK_SPEAKER && select("Speaker", "audiooutput", prefs.speakerId, onSpeaker)}
+      <label className="call-setting">
+        <span>Voices</span>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={prefs.voices}
+          onChange={(e) => onVoices(Number(e.target.value))}
+          aria-label="Voices volume"
+        />
+      </label>
+      <button className="call-settings-done" onClick={onClose}>
+        Done
+      </button>
+    </div>
+  );
 }

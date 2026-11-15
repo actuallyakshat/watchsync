@@ -156,6 +156,8 @@ export const playerSetup = () => invoke<PlayerSetup>("player_setup");
 export const installPlayer = () => invoke<void>("install_player");
 export const installCroc = () => invoke<void>("install_croc");
 export const showCall = () => invoke<void>("show_call");
+/** True if sound is coming out of speakers (null: can't tell). */
+export const outputIsSpeakers = () => invoke<boolean | null>("output_is_speakers");
 export const setCallShortcuts = (mic: string, cam: string) => invoke<void>("set_call_shortcuts", { mic, cam });
 /** A call shortcut was pressed, anywhere on the Mac. */
 export const onCallShortcut = (f: (action: "mic" | "cam") => void): Promise<UnlistenFn> =>

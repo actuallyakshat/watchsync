@@ -8,6 +8,13 @@ export interface CallPrefs {
   layout: "speaker" | "grid";
   /** Size of the expanded call window (logical pixels). */
   size: { width: number; height: number };
+  /** Everyone's voices (0–1), and per person, by name. */
+  voices: number;
+  volumes: Record<string, number>;
+  /** Chosen devices ("" = the system default). */
+  micId: string;
+  camId: string;
+  speakerId: string;
 }
 
 export const CALL_KEY = "watchsync.call";
@@ -18,6 +25,11 @@ export const DEFAULT_PREFS: CallPrefs = {
   selfView: false,
   layout: "speaker",
   size: { width: 320, height: 200 },
+  voices: 1,
+  volumes: {},
+  micId: "",
+  camId: "",
+  speakerId: "",
 };
 
 export function loadPrefs(): CallPrefs {
@@ -34,6 +46,13 @@ export function loadPrefs(): CallPrefs {
       selfView: p.selfView === true,
       layout: p.layout === "grid" ? "grid" : "speaker",
       size,
+      voices: volume(p.voices),
+      volumes: Object.fromEntries(
+        Object.entries(p.volumes && typeof p.volumes === "object" ? p.volumes : {}).map(([k, v]) => [k, volume(v)]),
+      ),
+      micId: typeof p.micId === "string" ? p.micId : "",
+      camId: typeof p.camId === "string" ? p.camId : "",
+      speakerId: typeof p.speakerId === "string" ? p.speakerId : "",
     };
   } catch {
     return DEFAULT_PREFS;
@@ -44,4 +63,5 @@ export function savePrefs(p: CallPrefs) {
   localStorage.setItem(CALL_KEY, JSON.stringify(p));
 }
 
+const volume = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? clamp(v, 0, 1) : 1);
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));

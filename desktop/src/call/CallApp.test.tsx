@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import { EMPTY, type Snapshot } from "../api";
@@ -7,10 +7,12 @@ import { CALL_KEY } from "./prefs";
 
 // --- Tauri, mocked ---------------------------------------------------------
 const sent: { type: string; [k: string]: unknown }[] = [];
+let speakers: boolean | null = false;
 const listeners = new Map<string, (e: { payload: unknown }) => void>();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { cmd: { type: string } }) => {
     if (cmd === "send") sent.push(args!.cmd);
+    if (cmd === "output_is_speakers") return speakers;
   }),
 }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -28,6 +30,8 @@ vi.mock("./win", () => ({
     resized = f;
     return () => {};
   }),
+  restorePosition: vi.fn(async () => {}),
+  rememberPosition: vi.fn(async () => () => {}),
 }));
 
 const getUserMedia = vi.fn(async (c: MediaStreamConstraints) => new FakeStream([new FakeTrack(c.audio ? "audio" : "video")]));
@@ -60,6 +64,7 @@ beforeEach(() => {
   sizes.length = 0;
   localStorage.clear();
   getUserMedia.mockClear();
+  speakers = false;
   Object.defineProperty(navigator, "mediaDevices", { value: { getUserMedia }, configurable: true });
   HTMLMediaElement.prototype.play = vi.fn(async () => {});
 });
@@ -188,4 +193,37 @@ test("the mic shortcut works from any app and says so on the movie", async () =>
   expect(sent).toContainEqual({ type: "notify", text: "Mic on" });
   act(() => listeners.get("call-shortcut")!({ payload: "mic" }));
   await waitFor(() => expect(sent).toContainEqual({ type: "notify", text: "Mic muted" }));
+});
+
+test("on speakers with the mic on, it asks for headphones", async () => {
+  speakers = true;
+  await start();
+  expect(screen.queryByRole("button", { name: "You're on speakers" })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Turn your mic on" }));
+  await userEvent.click(await screen.findByRole("button", { name: "You're on speakers" }));
+  expect(await screen.findByRole("status")).toHaveTextContent("Use headphones");
+  await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("a chosen camera is used, and a missing one falls back to the default", async () => {
+  localStorage.setItem(CALL_KEY, JSON.stringify({ camId: "usb-cam" }));
+  getUserMedia.mockRejectedValueOnce(new DOMException("gone", "OverconstrainedError"));
+  await start();
+  await userEvent.click(screen.getByRole("button", { name: "Turn your camera on" }));
+  await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(2));
+  expect(getUserMedia.mock.calls[0][0]).toEqual({ video: expect.objectContaining({ deviceId: { exact: "usb-cam" } }) });
+  expect(getUserMedia.mock.calls[1][0]).toEqual({ video: expect.not.objectContaining({ deviceId: expect.anything() }) });
+  await waitFor(() => expect(sent).toContainEqual({ type: "set_call", mic: false, cam: true }));
+});
+
+test("voices and each friend have their own volume, remembered", async () => {
+  await start(riya(true));
+  await userEvent.click(await screen.findByRole("button", { name: "Call settings" }));
+  fireEvent.change(screen.getByRole("slider", { name: "Voices volume" }), { target: { value: "0.9" } });
+  expect(JSON.parse(localStorage.getItem(CALL_KEY)!).voices).toBeCloseTo(0.9);
+  fireEvent.change(screen.getByRole("slider", { name: "Riya's volume" }), { target: { value: "0" } });
+  expect(JSON.parse(localStorage.getItem(CALL_KEY)!).volumes).toEqual({ Riya: 0 });
+  fireEvent.change(screen.getByRole("slider", { name: "Riya's volume" }), { target: { value: "0.5" } });
+  await waitFor(() => expect(document.querySelector("audio")!.volume).toBeCloseTo(0.45));
 });

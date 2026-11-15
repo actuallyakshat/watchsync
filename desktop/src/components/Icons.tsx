@@ -162,3 +162,20 @@ export const PinIcon = () => (
     <path d="M6 2.5h4M7 2.5v3.75L4.5 9h7L9 6.25V2.5M8 9v4.5" />
   </svg>
 );
+
+/** Headphones. */
+export const HeadphonesIcon = () => (
+  <svg {...base}>
+    <path d="M2.5 11V8.5a5.5 5.5 0 0 1 11 0V11" />
+    <rect x="2" y="9.5" width="3" height="4.5" rx="1" />
+    <rect x="11" y="9.5" width="3" height="4.5" rx="1" />
+  </svg>
+);
+
+/** A speaker with sound waves. */
+export const VolumeIcon = () => (
+  <svg {...base}>
+    <path d="M2.5 6h2.25L8 3.25v9.5L4.75 10H2.5z" />
+    <path d="M10.5 5.75a3 3 0 0 1 0 4.5M12.25 4a5.5 5.5 0 0 1 0 8" />
+  </svg>
+);
