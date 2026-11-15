@@ -36,9 +36,18 @@ Both also install WatchSync's helper apps, mpv (the video player) and croc
   camera off until you turn them on). The call floats in a small
   always-on-top window you can put anywhere, even over the movie in
   fullscreen: a strip showing who's here, or expanded to show whoever's
-  talking or everyone. Space, arrows and F still control the movie from it;
-  M and V toggle your mic and camera. Use headphones, or friends hear the
-  movie twice.
+  talking or everyone. It comes back where you left it.
+  - **⌥⌘M / ⌥⌘V** toggle your mic and camera from any app while you're in
+    a room (change them in Settings). In the call window, Space, arrows and
+    F still control the movie.
+  - **Quality to match**: each friend is sent video only as big as you show
+    them (up to 1080p30), and none while the call is shrunk.
+  - **Your own mix**: a Voices volume and one per friend; pick your camera
+    and mic in the call window's settings.
+  - **Headphones**: on speakers with your mic on, it asks for headphones,
+    since friends would hear the movie twice.
+  - **Gets through**: if two Macs can't connect directly, the call relays
+    through iroh, like the rest of WatchSync (Troubleshooting can force it).
 - **Chat and reactions**, in the sidebar and on the movie itself.
 - **Same picture for everyone**: pick a crop (4:3, IMAX 1.43:1, 1.66:1, 16:9,
   1.85:1, IMAX 1.90:1, 2.00:1, 2.20:1, 2.39:1, 2.76:1) and every player shows
