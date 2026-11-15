@@ -2,6 +2,7 @@ Watch the same movie with friends on separate Macs, in sync. Everyone plays thei
 
 ## New in 0.5.1: a better call
 
+- **Short invite codes**, like `abc-defg-hij`, instead of a long link. Long links still work.
 - **See friends right away**: when someone turns their camera on, the call expands to show them. Dragging the strip bigger shows video too, and a green dot marks who has their camera on.
 - **⌥⌘M / ⌥⌘V** turn your mic and camera on or off from any app, even with the movie fullscreen, while you're in a room. Change them in Settings → Call shortcuts.
 - **Quality to match**: friends send you video only as big as you show it (up to 1080p30), and nothing while the call is shrunk.
