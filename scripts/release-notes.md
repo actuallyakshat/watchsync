@@ -1,5 +1,9 @@
 Watch the same movie with friends on separate Macs, in sync. Everyone plays their own copy; pause, play or seek on any Mac and it happens for everyone. No accounts.
 
+## New in 0.5.3
+
+- **Your camera starts off in every room**, even if you left it on last time. Turn it on when you're ready. Your mic still starts the way you left it.
+
 ## New in 0.5.2: a steadier room
 
 - **No more "left" then "joined"** popping up mid-movie when nobody went anywhere. A busy or briefly throttled Mac no longer looks like it dropped out, and if someone's connection really does blink and come straight back, nobody is told.
