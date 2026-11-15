@@ -20,10 +20,14 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 const sizes: [number, number][] = [];
+let resized: (w: number, h: number) => void = () => {};
 vi.mock("./win", () => ({
   setWindowSize: vi.fn(async (w: number, h: number) => void sizes.push([w, h])),
   startResize: vi.fn(),
-  onResized: vi.fn(async () => () => {}),
+  onResized: vi.fn(async (f: (w: number, h: number) => void) => {
+    resized = f;
+    return () => {};
+  }),
 }));
 
 const getUserMedia = vi.fn(async (c: MediaStreamConstraints) => new FakeStream([new FakeTrack(c.audio ? "audio" : "video")]));
@@ -38,11 +42,17 @@ const room: Snapshot = {
   player_open: true,
   peers: [
     { name: "Akshat", is_host: true, file: "match", drift_ms: 0, version: "0.5.0", outdated: false, id: "a", mic: false, cam: false },
-    { name: "Riya", is_host: false, file: "match", drift_ms: 0, version: "0.5.0", outdated: false, id: "b", mic: true, cam: true },
+    { name: "Riya", is_host: false, file: "match", drift_ms: 0, version: "0.5.0", outdated: false, id: "b", mic: true, cam: false },
   ],
 };
 
 const emit = (s: Snapshot) => act(() => listeners.get("snapshot")!({ payload: s }));
+/** The room with Riya's camera on or off, and the movie fullscreen or not. */
+const riya = (cam: boolean, player_fullscreen = false): Snapshot => ({
+  ...room,
+  player_fullscreen,
+  peers: room.peers.map((p) => (p.id === "b" ? { ...p, cam } : p)),
+});
 
 beforeEach(() => {
   installFakeRtc();
@@ -95,14 +105,35 @@ test("a blocked camera says where to allow it", async () => {
   expect(sent).not.toContainEqual(expect.objectContaining({ type: "set_call", cam: true }));
 });
 
-test("going fullscreen with a friend's camera on brings the call up", async () => {
+test("a friend's camera coming on brings the call up", async () => {
   await start();
   const pill = sizes.at(-1)!;
-  emit({ ...room, player_fullscreen: true });
-  await waitFor(() => expect(sizes.at(-1)).toEqual([320, 200]));
   expect(pill[1]).toBeLessThan(60);
+  expect(screen.getByRole("button", { name: "Expand the call" })).toHaveAttribute("title", "Expand");
+  emit(riya(true));
+  await waitFor(() => expect(sizes.at(-1)).toEqual([320, 200]));
   await userEvent.click(screen.getByRole("button", { name: "Shrink the call" }));
   await waitFor(() => expect(sizes.at(-1)).toEqual(pill));
+  // The strip says there's video to see.
+  expect(screen.getByTitle("Riya (camera on)")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Expand the call" })).toHaveAttribute("title", "Expand to see video");
+});
+
+test("once you shrink the call, only going fullscreen brings it back up", async () => {
+  await start(riya(true));
+  await userEvent.click(await screen.findByRole("button", { name: "Shrink the call" }));
+  emit(riya(false));
+  emit(riya(true));
+  expect(screen.queryByRole("button", { name: "Shrink the call" })).toBeNull();
+  emit(riya(true, true));
+  expect(await screen.findByRole("button", { name: "Shrink the call" })).toBeInTheDocument();
+});
+
+test("dragging the strip bigger shows the video at that size", async () => {
+  await start();
+  act(() => resized(480, 300));
+  expect(await screen.findByRole("button", { name: "Shrink the call" })).toBeInTheDocument();
+  await waitFor(() => expect(sizes.at(-1)).toEqual([480, 300]));
 });
 
 test("the movie's keys work from the call window", async () => {

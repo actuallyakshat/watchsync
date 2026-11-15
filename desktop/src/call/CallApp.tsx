@@ -58,6 +58,8 @@ export function CallApp() {
   inRoomRef.current = inRoom;
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  /** You shrank the call yourself in this room: cameras don't expand it. */
+  const shrunk = useRef(false);
 
   const setPrefs = useCallback((change: Partial<CallPrefs>) => {
     setPrefsState((p) => {
@@ -155,6 +157,7 @@ export function CallApp() {
       void setDevice("audio", false, false);
       void setDevice("video", false, false);
       setMode("pill");
+      shrunk.current = false;
       setPinned(null);
       setError(null);
       setBlocked(false);
@@ -214,19 +217,23 @@ export function CallApp() {
 
   useEffect(() => {
     const un = onResized((width, height) => {
-      if (modeRef.current === "tiles" && width > 150 && height > 90) setPrefs({ size: { width, height } });
+      if (width <= 150 || height <= 90) return;
+      // Dragging the strip bigger means "show me the video", at that size.
+      if (modeRef.current === "pill") setMode("tiles");
+      setPrefs({ size: { width, height } });
     });
     return () => void un.then((f) => f());
   }, [setPrefs]);
 
-  // Going fullscreen with someone's camera on brings their video up.
+  // A friend's camera coming on brings their video up (unless you shrank
+  // the call yourself); so does going fullscreen with a camera on.
   const remoteCams = people.filter((p) => p.cam).length;
   const before = useRef({ fullscreen: false, cams: 0 });
   useEffect(() => {
     const was = before.current;
-    const fullscreenNow = snap.player_fullscreen && !was.fullscreen;
-    const camNow = snap.player_fullscreen && remoteCams > 0 && was.cams === 0;
-    if ((fullscreenNow && remoteCams > 0) || camNow) setMode("tiles");
+    const fullscreenNow = snap.player_fullscreen && !was.fullscreen && remoteCams > 0;
+    const camNow = remoteCams > 0 && was.cams === 0 && (!shrunk.current || snap.player_fullscreen);
+    if (fullscreenNow || camNow) setMode("tiles");
     before.current = { fullscreen: snap.player_fullscreen, cams: remoteCams };
   }, [snap.player_fullscreen, remoteCams]);
 
@@ -277,8 +284,8 @@ export function CallApp() {
           {people.slice(0, 4).map((p) => (
             <span
               key={p.id}
-              className={`avatar small ${talking(p.id) ? "talking" : ""}`}
-              title={p.name}
+              className={`avatar small ${talking(p.id) ? "talking" : ""} ${p.cam ? "has-cam" : ""}`}
+              title={p.cam ? `${p.name} (camera on)` : p.name}
               data-tauri-drag-region
             >
               {initial(p.name)}
@@ -292,7 +299,12 @@ export function CallApp() {
         ) : (
           <Buttons mic={mic} cam={cam} micTalking={mic && talking("")} onToggle={toggle} />
         )}
-        <button className="call-btn" onClick={() => setMode("tiles")} aria-label="Expand the call" title="Expand">
+        <button
+          className={`call-btn ${remoteCams > 0 ? "on" : ""}`}
+          onClick={() => setMode("tiles")}
+          aria-label="Expand the call"
+          title={remoteCams > 0 ? "Expand to see video" : "Expand"}
+        >
           <ExpandIcon />
         </button>
       </div>
@@ -368,7 +380,15 @@ export function CallApp() {
             <SelfIcon />
           </button>
         )}
-        <button className="call-btn" onClick={() => setMode("pill")} aria-label="Shrink the call" title="Shrink">
+        <button
+          className="call-btn"
+          onClick={() => {
+            shrunk.current = true;
+            setMode("pill");
+          }}
+          aria-label="Shrink the call"
+          title="Shrink"
+        >
           <CollapseIcon />
         </button>
       </div>

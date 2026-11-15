@@ -1326,6 +1326,27 @@ html.call-window #root {
   font-size: 12px;
 }
 
+.avatar.has-cam {
+  position: relative;
+}
+
+/* A green dot: their camera is on (expand to see them). */
+.avatar.has-cam::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--call-talk);
+  box-shadow: 0 0 0 2px #121214;
+}
+
+.call.pill .call-btn.on:not(.talking) {
+  background: rgb(255 255 255 / 0.2);
+}
+
 .avatar.talking {
   box-shadow: 0 0 0 2px var(--call-talk);
   animation: talk-pulse 1.2s var(--ease) infinite;
