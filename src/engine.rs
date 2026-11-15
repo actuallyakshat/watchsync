@@ -793,6 +793,9 @@ impl Engine {
         self.applied_crop = None;
         self.drift_ms = None;
         self.player_fullscreen = false;
+        // The call window sets these again when it joins the next call.
+        self.mic = false;
+        self.cam = false;
     }
 
     /// Apply the room's crop to the player if it isn't already. Needs the

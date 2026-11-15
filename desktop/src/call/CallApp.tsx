@@ -258,9 +258,9 @@ export function CallApp() {
 
   const now = performance.now();
   const talking = (id: string) => isTalking(talk, id, now);
-  const sound = people.map((p) =>
-    p.remote ? <RemoteAudio key={p.id} remote={p.remote} audios={audios.current} onBlocked={onBlocked} /> : null,
-  );
+  // Everyone connected is heard, even someone briefly missing from the room
+  // list while their connection to the host blinks.
+  const sound = remotes.map((r) => <RemoteAudio key={r.id} remote={r} audios={audios.current} onBlocked={onBlocked} />);
 
   if (!inRoom) return <div className="call" />;
 

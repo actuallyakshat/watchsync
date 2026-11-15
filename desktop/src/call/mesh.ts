@@ -8,11 +8,32 @@
 // creates the audio and video transceivers; the other side adopts the ones
 // that arrive with the first offer. Turning the mic or camera on or off only
 // swaps the track on an existing transceiver, so it never renegotiates.
+//
+// The call must outlive the room's own trouble: a guest's connection blinking
+// or the host handing over briefly shortens the member list, but the media
+// path is direct and fine. So a person missing from the list is hung up on
+// only after a grace period. Each connection has a session id, so an offer
+// from a replaced connection (the other side reloaded, or gave up and
+// started over) replaces ours too, and stale answers and candidates are
+// dropped. The side that offers retries if a connection never comes up
+// (an offer lost while the room had no host).
 
 export interface SignalData {
   description?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit | null;
+  /** The sender's connection, and the receiver's as the sender knows it. */
+  session?: string;
+  to_session?: string | null;
 }
+
+/** Someone missing from the room list this long is hung up on. */
+export const GRACE_MS = 45_000;
+/** The offering side starts over if not connected this long after offering. */
+export const RETRY_MS = 12_000;
+/** Longest wait between retries for someone who never answers (an older app). */
+export const MAX_RETRY_MS = 120_000;
+/** Signals kept while we don't know our own id yet (the window is starting). */
+const EARLY_SIGNALS = 100;
 
 export type Kind = "audio" | "video";
 
@@ -37,6 +58,11 @@ type Send = (to: string, data: SignalData) => void;
 export class Mesh {
   private links = new Map<string, Link>();
   private tracks: Record<Kind, MediaStreamTrack | null> = { audio: null, video: null };
+  private leaving = new Map<string, ReturnType<typeof setTimeout>>();
+  private early: [string, SignalData][] = [];
+  /** Signals are handled one at a time, in order: a candidate must not
+   * overtake the offer it belongs to. */
+  private chain: Promise<void> = Promise.resolve();
 
   constructor(
     private myId: string,
@@ -50,25 +76,58 @@ export class Mesh {
     if (id === this.myId) return;
     this.closeLinks();
     this.myId = id;
+    const early = this.early;
+    this.early = [];
+    for (const [from, data] of early) void this.onSignal(from, data);
   }
 
-  /** Keep a connection to exactly these people (endpoint ids). */
+  /** Keep a connection to these people (endpoint ids); hang up on the rest
+   * once they've been gone for the grace period. */
   sync(ids: string[]) {
     if (!this.myId) return;
     const wanted = new Set(ids.filter((id) => id && id !== this.myId));
-    for (const [id, link] of this.links) {
-      if (!wanted.has(id)) {
-        link.close();
-        this.links.delete(id);
-      }
+    for (const id of this.links.keys()) {
+      if (wanted.has(id) || this.leaving.has(id)) continue;
+      this.leaving.set(
+        id,
+        setTimeout(() => {
+          this.leaving.delete(id);
+          this.links.get(id)?.close();
+          this.links.delete(id);
+          this.onChange();
+        }, GRACE_MS),
+      );
     }
-    for (const id of wanted) this.link(id);
+    for (const id of wanted) {
+      const timer = this.leaving.get(id);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        this.leaving.delete(id);
+      }
+      this.link(id);
+    }
     this.onChange();
   }
 
-  async onSignal(from: string, data: SignalData) {
-    if (!this.myId || !from || from === this.myId) return;
-    await this.link(from).onSignal(data);
+  onSignal(from: string, data: SignalData): Promise<void> {
+    this.chain = this.chain.then(() => this.handle(from, data)).catch((e) => console.warn("call signal failed", e));
+    return this.chain;
+  }
+
+  private async handle(from: string, data: SignalData) {
+    if (!from || from === this.myId) return;
+    if (!this.myId) {
+      if (this.early.length < EARLY_SIGNALS) this.early.push([from, data]);
+      return;
+    }
+    let link = this.link(from);
+    // Their side started a new connection: start ours over to match.
+    if (data.description?.type === "offer" && data.session && link.remoteSession && data.session !== link.remoteSession) {
+      link.close();
+      this.links.delete(from);
+      link = this.link(from);
+    }
+    await link.onSignal(data);
   }
 
   /** Send this track to everyone (null = stop sending). */
@@ -91,15 +150,24 @@ export class Mesh {
   }
 
   private closeLinks() {
+    for (const timer of this.leaving.values()) clearTimeout(timer);
+    this.leaving.clear();
     for (const link of this.links.values()) link.close();
     this.links.clear();
     this.onChange();
   }
 
-  private link(id: string): Link {
+  private link(id: string, retryAfter = RETRY_MS): Link {
     let link = this.links.get(id);
     if (!link) {
-      link = new Link(id, this.myId < id, this.config, this.signal, this.onChange, (k) => this.tracks[k]);
+      const restart = (wait: number) => {
+        if (this.links.get(id) !== link) return;
+        link!.close();
+        this.links.delete(id);
+        this.link(id, Math.min(wait * 2, MAX_RETRY_MS));
+        this.onChange();
+      };
+      link = new Link(id, this.myId < id, this.config, this.signal, this.onChange, (k) => this.tracks[k], retryAfter, restart);
       this.links.set(id, link);
     }
     return link;
@@ -107,6 +175,10 @@ export class Mesh {
 }
 
 class Link {
+  readonly session = randomId();
+  /** The other side's connection, once heard from. */
+  remoteSession: string | null = null;
+  private watchdog: ReturnType<typeof setTimeout> | null = null;
   private pc: RTCPeerConnection;
   private makingOffer = false;
   private ignoreOffer = false;
@@ -124,10 +196,12 @@ class Link {
     private signal: Send,
     private onChange: () => void,
     private local: (k: Kind) => MediaStreamTrack | null,
+    private retryAfter: number,
+    private restart: (wait: number) => void,
   ) {
     this.polite = !initiator;
     this.pc = new RTCPeerConnection(config);
-    this.pc.onicecandidate = ({ candidate }) => this.signal(id, { candidate: candidate?.toJSON() ?? null });
+    this.pc.onicecandidate = ({ candidate }) => this.send_({ candidate: candidate?.toJSON() ?? null });
     this.pc.onnegotiationneeded = () => void this.offer();
     this.pc.ontrack = ({ track }) => {
       for (const t of this.stream.getTracks()) if (t.kind === track.kind && t !== track) this.stream.removeTrack(t);
@@ -139,6 +213,7 @@ class Link {
       // A network change (Wi-Fi to Ethernet, a VPN) can break the path:
       // look for a new one rather than give up.
       if (this.pc.connectionState === "failed" && !this.closed) this.pc.restartIce();
+      if (this.pc.connectionState === "connected") this.retryAfter = RETRY_MS;
       this.onChange();
     };
     if (initiator) {
@@ -172,8 +247,13 @@ class Link {
     }
   }
 
-  async onSignal({ description, candidate }: SignalData) {
+  async onSignal({ description, candidate, session, to_session }: SignalData) {
     if (this.closed) return;
+    // Meant for a connection of ours that's been replaced, or from one of
+    // theirs that has been.
+    if (to_session && to_session !== this.session) return;
+    if (session && this.remoteSession && session !== this.remoteSession) return;
+    if (session) this.remoteSession = session;
     try {
       if (description) {
         const collision =
@@ -184,7 +264,7 @@ class Link {
         if (description.type === "offer") {
           this.adopt();
           await this.pc.setLocalDescription();
-          this.signal(this.id, { description: this.pc.localDescription!.toJSON() });
+          this.send_({ description: this.pc.localDescription!.toJSON() });
         }
       } else if (candidate !== undefined) {
         try {
@@ -200,6 +280,7 @@ class Link {
 
   close() {
     this.closed = true;
+    if (this.watchdog) clearTimeout(this.watchdog);
     this.pc.onicecandidate = this.pc.onnegotiationneeded = this.pc.ontrack = this.pc.onconnectionstatechange = null;
     this.pc.close();
   }
@@ -209,12 +290,26 @@ class Link {
     try {
       this.makingOffer = true;
       await this.pc.setLocalDescription();
-      this.signal(this.id, { description: this.pc.localDescription!.toJSON() });
+      this.send_({ description: this.pc.localDescription!.toJSON() });
+      // The offering side owns retries, so the two never start over at once.
+      if (!this.polite) this.armWatchdog();
     } catch (e) {
       console.warn("call offer to", this.id, "failed", e);
     } finally {
       this.makingOffer = false;
     }
+  }
+
+  private send_(data: SignalData) {
+    this.signal(this.id, { ...data, session: this.session, to_session: this.remoteSession });
+  }
+
+  private armWatchdog() {
+    if (this.watchdog) clearTimeout(this.watchdog);
+    this.watchdog = setTimeout(() => {
+      this.watchdog = null;
+      if (!this.closed && this.pc.connectionState !== "connected") this.restart(this.retryAfter);
+    }, this.retryAfter);
   }
 
   /** The answering side: use the transceivers the offer created. */
@@ -241,6 +336,12 @@ function preferHardwareVideo(t: RTCRtpTransceiver | null) {
   } catch {
     // Keep the browser's order.
   }
+}
+
+function randomId(): string {
+  const b = new Uint8Array(8);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
 async function capBitrate(sender: RTCRtpSender) {

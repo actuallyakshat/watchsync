@@ -25,8 +25,7 @@
           "x": 18,
           "y": 20
         },
-        "dragDropEnabled": false,
-        "backgroundThrottling": "disabled"
+        "dragDropEnabled": false
       },
       {
         "label": "call",

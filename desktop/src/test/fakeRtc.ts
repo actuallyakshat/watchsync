@@ -75,6 +75,8 @@ export class FakePC {
   ontrack: ((e: { track: FakeTrack }) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
   restarts = 0;
+  private needPending = false;
+  private remoteSet = false;
 
   constructor() {
     FakePC.all.push(this);
@@ -82,7 +84,14 @@ export class FakePC {
   addTransceiver(kind: string, init: { direction: string }) {
     const t = new FakeTransceiver(kind, init.direction);
     this.transceivers.push(t);
-    queueMicrotask(() => this.onnegotiationneeded?.());
+    // Like browsers: several changes in a row need one negotiation.
+    if (!this.needPending) {
+      this.needPending = true;
+      queueMicrotask(() => {
+        this.needPending = false;
+        this.onnegotiationneeded?.();
+      });
+    }
     return t;
   }
   getTransceivers() {
@@ -95,6 +104,8 @@ export class FakePC {
     this.signalingState = type === "offer" ? "have-local-offer" : "stable";
   }
   async setRemoteDescription(d: Desc) {
+    await Promise.resolve(); // takes a moment, like the real thing
+    this.remoteSet = true;
     const kinds = d.sdp.split(",").filter(Boolean);
     if (d.type === "offer") {
       kinds.forEach((kind, i) => {
@@ -108,6 +119,7 @@ export class FakePC {
     for (const t of this.transceivers) this.ontrack?.({ track: t.receiver.track });
   }
   async addIceCandidate(c: unknown) {
+    if (!this.remoteSet) throw new DOMException("no remote description", "InvalidStateError");
     this.candidates.push(c);
   }
   restartIce() {
