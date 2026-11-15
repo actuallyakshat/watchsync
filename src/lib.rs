@@ -5,5 +5,7 @@ pub mod find;
 pub mod fingerprint;
 pub mod mpv;
 pub mod net;
+pub mod relay;
 pub mod share;
+pub mod stun;
 pub mod sync;

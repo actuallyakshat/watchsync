@@ -5,6 +5,7 @@
 use crate::fingerprint::fingerprint;
 use crate::mpv::{Comfort, Mpv, MpvEvent, Track, TrackKind};
 use crate::net::{self, HostLink, Intent, Msg, NetEvent, Offer, PeerInfo, Reaction};
+use crate::relay::{Relay, TurnInfo};
 use crate::share::{self, Croc, CrocEvent, Progress};
 use crate::sync::{
     ClockSync, Correction, Crop, PLAY_LEAD_MS, PlaybackState, correction, crop_geometry,
@@ -15,6 +16,7 @@ use iroh::Endpoint;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::{MissedTickBehavior, timeout};
@@ -269,6 +271,8 @@ pub struct Snapshot {
     pub cam: bool,
     /// The movie window is fullscreen.
     pub player_fullscreen: bool,
+    /// This Mac's fallback relay for the call (a TURN server on 127.0.0.1).
+    pub turn: Option<TurnInfo>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -349,8 +353,10 @@ struct Engine {
     phase: Phase,
     role: Role,
     endpoint: Option<Endpoint>,
-    /// Accepting guests on `endpoint` already.
-    serving: bool,
+    /// Accepting guests on `endpoint` (this Mac is the host).
+    serving: Arc<AtomicBool>,
+    /// The call's fallback relay, while in a room.
+    relay: Option<Relay>,
     /// The host's code (shared as the invite).
     code: Option<String>,
     /// Numbers host connections and attempts so stale ones are ignored.
@@ -433,7 +439,8 @@ pub async fn run_with(
         phase: Phase::Home,
         role: Role::None,
         endpoint: None,
-        serving: false,
+        serving: Arc::new(AtomicBool::new(false)),
+        relay: None,
         code: None,
         next_conn: 1,
         last_host_msg: now,
@@ -530,8 +537,7 @@ impl Engine {
                 self.publish();
                 match timeout(CONNECT_TIMEOUT, net::bind()).await {
                     Ok(Ok(endpoint)) => {
-                        net::serve(endpoint.clone(), self.net_tx.clone());
-                        self.serving = true;
+                        self.start_listening(&endpoint, true).await;
                         self.code = Some(net::code_of(&endpoint));
                         self.endpoint = Some(endpoint);
                         self.role = Role::Host {
@@ -556,6 +562,7 @@ impl Engine {
                 };
                 match timeout(CONNECT_TIMEOUT, attempt).await {
                     Ok(Ok((endpoint, link))) => {
+                        self.start_listening(&endpoint, false).await;
                         self.next_conn += 1;
                         self.endpoint = Some(endpoint);
                         self.code = Some(link.code.clone());
@@ -730,7 +737,8 @@ impl Engine {
         if let Some(endpoint) = self.endpoint.take() {
             tokio::spawn(async move { endpoint.close().await });
         }
-        self.serving = false;
+        self.serving.store(false, Ordering::SeqCst);
+        self.relay = None;
     }
 
     /// Who takes over if the host leaves: the earliest-joined guest that
@@ -765,7 +773,8 @@ impl Engine {
                 endpoint.close().await
             });
         }
-        self.serving = false;
+        self.serving.store(false, Ordering::SeqCst);
+        self.relay = None;
         self.code = None;
         self.phase = Phase::Home;
         self.room_peers.clear();
@@ -1358,10 +1367,8 @@ impl Engine {
         s.action = "is now the host".into();
         self.clock = ClockSync::default();
         self.state = s;
-        if !self.serving {
-            net::serve(endpoint.clone(), self.net_tx.clone());
-            self.serving = true;
-        }
+        // Guests dialling us before now were turned away; they retry.
+        self.serving.store(true, Ordering::SeqCst);
         self.code = Some(net::code_of(&endpoint));
         self.role = Role::Host {
             peers: HashMap::new(),
@@ -1388,6 +1395,21 @@ impl Engine {
         for name in gone {
             self.osd(&format!("{name} left")).await;
         }
+    }
+
+    /// Handle incoming connections on a new endpoint (guests if `host`, and
+    /// friends' call relays), and start the call's relay.
+    async fn start_listening(&mut self, endpoint: &Endpoint, host: bool) {
+        self.serving = Arc::new(AtomicBool::new(host));
+        let (relay_tx, relay_rx) = mpsc::unbounded_channel();
+        net::listen(endpoint.clone(), self.net_tx.clone(), self.serving.clone(), relay_tx);
+        self.relay = match Relay::start(endpoint.clone(), relay_rx).await {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("call relay unavailable: {e}");
+                None
+            }
+        };
     }
 
     /// Guest without a movie: look for the host's file, by exact name, once
@@ -1895,6 +1917,9 @@ impl Engine {
     // ------------------------------------------------------------ snapshot
 
     fn publish(&self) {
+        if let Some(relay) = &self.relay {
+            relay.set_peers(self.room_peers.iter().map(|p| (p.id.as_str(), p.code.as_str())));
+        }
         let host = self.room_peers.iter().find(|p| p.is_host);
         let host_fp = host.and_then(|p| p.fingerprint.clone());
         let host_version = host.map(|p| p.version.clone()).unwrap_or_default();
@@ -1956,6 +1981,7 @@ impl Engine {
             mic: self.mic,
             cam: self.cam,
             player_fullscreen: self.player_fullscreen,
+            turn: self.relay.as_ref().map(|r| r.info.clone()),
         };
         // Bounded(1) channel: replace any snapshot the UI hasn't drawn yet.
         let _ = self.ui.force_send(snapshot);

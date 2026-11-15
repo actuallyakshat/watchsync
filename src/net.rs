@@ -6,9 +6,13 @@ use anyhow::{Result, anyhow};
 use iroh::{Endpoint, EndpointAddr, endpoint::presets};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 
 pub const ALPN: &[u8] = b"watchsync/0";
+/// The call's fallback relay between two people's Macs (see `relay`).
+pub const ALPN_RELAY: &[u8] = b"watchsync/relay/0";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum Intent {
@@ -277,7 +281,7 @@ fn spawn_reader(
 /// it's reachable (so its address code includes the relay).
 pub async fn bind() -> Result<Endpoint> {
     let endpoint = Endpoint::builder(presets::N0)
-        .alpns(vec![ALPN.to_vec()])
+        .alpns(vec![ALPN.to_vec(), ALPN_RELAY.to_vec()])
         .bind()
         .await
         .map_err(err)?;
@@ -294,16 +298,40 @@ pub fn id_of(endpoint: &Endpoint) -> String {
     endpoint.id().to_string()
 }
 
-/// Start accepting guests on `endpoint` (call once, when becoming host).
+/// Accept guests on `endpoint` right away (a host that never hands over).
 pub fn serve(endpoint: Endpoint, events: mpsc::UnboundedSender<NetEvent>) {
+    let (relay, _) = mpsc::unbounded_channel();
+    listen(endpoint, events, Arc::new(AtomicBool::new(true)), relay);
+}
+
+/// Handle every incoming connection on `endpoint` (call once, right after
+/// binding): guests joining, while `serving` (this Mac is the host), and
+/// friends' call relays at any time (handed to `relay`).
+pub fn listen(
+    endpoint: Endpoint,
+    events: mpsc::UnboundedSender<NetEvent>,
+    serving: Arc<AtomicBool>,
+    relay: mpsc::UnboundedSender<iroh::endpoint::Connection>,
+) {
     tokio::spawn(async move {
         let mut next_id = 1u64;
         while let Some(incoming) = endpoint.accept().await {
             let id = next_id;
             next_id += 1;
             let events = events.clone();
+            let serving = serving.clone();
+            let relay = relay.clone();
             tokio::spawn(async move {
                 let Ok(conn) = incoming.await else { return };
+                if conn.alpn() == ALPN_RELAY {
+                    let _ = relay.send(conn);
+                    return;
+                }
+                if conn.alpn() != ALPN || !serving.load(Ordering::SeqCst) {
+                    // Not the host (yet): the guest tries again shortly.
+                    conn.close(0u32.into(), b"not hosting");
+                    return;
+                }
                 let Ok((send, recv)) = conn.accept_bi().await else {
                     return;
                 };

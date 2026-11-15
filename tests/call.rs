@@ -101,3 +101,17 @@ fn the_call_window_knows_when_the_movie_goes_fullscreen() {
     ipc(&socket, json!(["set_property", "fullscreen", false]));
     host.wait("windowed", 5, |s| !s.player_fullscreen);
 }
+
+#[test]
+fn each_room_gets_its_own_relay_for_the_call() {
+    let (mut host, _h) = person("Host");
+    assert!(host.now().turn.is_none());
+    host.send(UiCmd::Host);
+    let first = host.wait("relay", 30, |s| s.turn.is_some()).turn.unwrap();
+    assert!(first.urls.starts_with("turn:127.0.0.1:") && !first.credential.is_empty());
+    host.send(UiCmd::Leave);
+    host.wait("left", 10, |s| s.turn.is_none());
+    host.send(UiCmd::Host);
+    let second = host.wait("new relay", 30, |s| s.turn.is_some()).turn.unwrap();
+    assert_ne!(first.credential, second.credential);
+}
