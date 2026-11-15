@@ -321,7 +321,8 @@ struct Peer {
     /// Endpoint id and address code ("" for 0.2.x apps).
     id: String,
     code: String,
-    last_seen: Instant,
+    /// When their Mac was last heard from (by the network, not the engine).
+    alive: net::Liveness,
     offer: Option<Offer>,
     mic: bool,
     cam: bool,
@@ -334,6 +335,15 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long a new room waits for its short invite code to be published
 /// before falling back to the long link.
 const INVITE_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// Someone whose connection drops and comes back within this long (a
+/// network blip) isn't announced as having left and joined again.
+const REJOIN_GRACE: Duration = Duration::from_secs(10);
+
+/// Connected, but nothing except keepalives for this long: the other Mac's
+/// app is stuck (its network still answers). Treat it as gone, so a stuck
+/// host is replaced and a stuck guest doesn't stay in the list forever.
+const STUCK: Duration = Duration::from_secs(30);
 
 /// After we pause/unpause mpv ourselves, pause events within this window are ours.
 const OWN_PAUSE_GRACE: Duration = Duration::from_millis(400);
@@ -373,8 +383,10 @@ struct Engine {
     invite_publisher: Option<net::InvitePublisher>,
     /// Numbers host connections and attempts so stale ones are ignored.
     next_conn: u64,
-    last_host_msg: Instant,
     reconnects: u32,
+    /// Host: guests whose connection dropped, by endpoint id, with their
+    /// name and when. Announced as "left" only if they don't come back soon.
+    departed: HashMap<String, (String, Instant)>,
     chat: Vec<ChatLine>,
     tracks: Vec<Track>,
     comfort: Comfort,
@@ -461,8 +473,8 @@ pub async fn run_with(
         invite: None,
         invite_publisher: None,
         next_conn: 1,
-        last_host_msg: now,
         reconnects: 0,
+        departed: HashMap::new(),
         chat: Vec::new(),
         tracks: Vec::new(),
         comfort: Comfort::default(),
@@ -775,6 +787,7 @@ impl Engine {
         self.relay = None;
         self.invite = None;
         self.invite_publisher = None;
+        self.departed.clear();
     }
 
     /// Who takes over if the host leaves: the earliest-joined guest that
@@ -816,6 +829,7 @@ impl Engine {
         self.invite_publisher = None;
         self.phase = Phase::Home;
         self.room_peers.clear();
+        self.departed.clear();
         self.state = PlaybackState::default();
         self.clock = ClockSync::default();
         self.crop = Crop::Original;
@@ -1148,16 +1162,18 @@ impl Engine {
             self.tracks.clear();
         }
         if self.is_host() {
-            self.refresh_peers();
             self.prune_silent_peers().await;
-        } else if let Some(tx) = self.host_tx() {
-            let _ = tx.send(Msg::Ping { t0: now_ms() });
-            let _ = tx.send(Msg::Status {
+            self.announce_departures().await;
+            self.refresh_peers();
+        } else if let Role::Guest { link: Some(l), .. } = &self.role {
+            let _ = l.tx.send(Msg::Ping { t0: now_ms() });
+            let _ = l.tx.send(Msg::Status {
                 fingerprint: self.fingerprint.clone(),
                 drift_ms: self.drift_ms,
             });
-            if self.last_host_msg.elapsed() > self.timing.silence {
-                // Nothing from the host for a while: treat it as gone.
+            if l.alive.idle() > self.timing.silence || l.alive.quiet() > STUCK {
+                // Nothing from the host for a while (or only keepalives from
+                // a stuck app): treat it as gone.
                 self.host_lost(None);
             }
         }
@@ -1226,7 +1242,7 @@ impl Engine {
 
     async fn on_net(&mut self, ev: NetEvent) {
         match ev {
-            NetEvent::PeerJoined { id, tx } => {
+            NetEvent::PeerJoined { id, tx, alive } => {
                 if let Role::Host { peers } = &mut self.role {
                     peers.insert(
                         id,
@@ -1238,7 +1254,7 @@ impl Engine {
                             version: String::new(),
                             id: String::new(),
                             code: String::new(),
-                            last_seen: Instant::now(),
+                            alive,
                             offer: None,
                             mic: false,
                             cam: false,
@@ -1249,11 +1265,11 @@ impl Engine {
             NetEvent::FromPeer { id, msg } => self.on_peer_msg(id, msg).await,
             NetEvent::PeerLeft { id } => {
                 let left = match &mut self.role {
-                    Role::Host { peers } => peers.remove(&id).map(|p| p.name),
+                    Role::Host { peers } => peers.remove(&id),
                     _ => None,
                 };
-                if let Some(name) = left {
-                    self.osd(&format!("{name} left")).await;
+                if let Some(p) = left {
+                    self.departed_peer(p.id, p.name).await;
                     self.refresh_peers();
                 }
             }
@@ -1261,7 +1277,6 @@ impl Engine {
                 if !matches!(&self.role, Role::Guest { link: Some(l), .. } if l.conn == conn) {
                     return; // an old connection
                 }
-                self.last_host_msg = Instant::now();
                 match msg {
                     Msg::Pong { t0, host_ms } => self.clock.add_sample(t0, host_ms, now_ms()),
                     Msg::State(s) => self.apply_state(s).await,
@@ -1348,7 +1363,6 @@ impl Engine {
             mic: self.mic,
             cam: self.cam,
         });
-        self.last_host_msg = Instant::now();
         // Guests never publish the invite (the host does).
         self.invite_publisher = None;
         self.role = Role::Guest {
@@ -1399,16 +1413,25 @@ impl Engine {
             return;
         }
         let my_id = self.endpoint.as_ref().map(net::id_of).unwrap_or_default();
-        let candidates = self.successors(&lost.old_id);
-        let target = if let Some(next) = &lost.successor {
+        let mut candidates = self.successors(&lost.old_id);
+        let window = self.timing.successor_window;
+        let target = match &lost.successor {
             // The host told us who takes over.
-            candidates.iter().find(|p| &p.id == next).cloned()
-        } else if elapsed < self.timing.old_host_grace {
-            None // keep trying the old host for now
-        } else {
-            let i = ((elapsed - self.timing.old_host_grace).as_secs_f64()
-                / self.timing.successor_window.as_secs_f64()) as usize;
-            candidates.get(i).cloned()
+            Some(next) if elapsed < window => candidates.iter().find(|p| &p.id == next).cloned(),
+            None if elapsed < self.timing.old_host_grace => None, // keep trying the old host for now
+            named => {
+                // Nobody took over in time (the one named may be gone too):
+                // go down the line, the same way on every Mac.
+                let start = match named {
+                    Some(next) => {
+                        candidates.retain(|p| &p.id != next);
+                        window
+                    }
+                    None => self.timing.old_host_grace,
+                };
+                let i = ((elapsed - start).as_secs_f64() / window.as_secs_f64()) as usize;
+                candidates.get(i).cloned()
+            }
         };
         let code = match &target {
             Some(p) if p.id == my_id => {
@@ -1467,6 +1490,7 @@ impl Engine {
         self.role = Role::Host {
             peers: HashMap::new(),
         };
+        self.departed.clear();
         self.error = None;
         self.refresh_peers();
         self.osd("You're now the host").await;
@@ -1490,19 +1514,45 @@ impl Engine {
     /// Host: drop guests we haven't heard from (their connection died quietly).
     async fn prune_silent_peers(&mut self) {
         let timeout = self.timing.peer_timeout;
-        let gone: Vec<String> = match &mut self.role {
+        let gone: Vec<Peer> = match &mut self.role {
             Role::Host { peers } => {
                 let ids: Vec<u64> = peers
                     .iter()
-                    .filter(|(_, p)| p.last_seen.elapsed() > timeout)
+                    .filter(|(_, p)| p.alive.idle() > timeout || p.alive.quiet() > STUCK)
                     .map(|(id, _)| *id)
                     .collect();
-                ids.iter().filter_map(|id| peers.remove(id)).map(|p| p.name).collect()
+                ids.iter().filter_map(|id| peers.remove(id)).collect()
             }
             _ => return,
         };
-        for name in gone {
+        for p in gone {
+            self.departed_peer(p.id, p.name).await;
+        }
+    }
+
+    /// Host: a guest's connection is gone. They may be back in a moment (a
+    /// network blip), so say they left only if they aren't.
+    async fn departed_peer(&mut self, id: String, name: String) {
+        if id.is_empty() {
+            // An app too old to say who it is: can't tell a return apart.
             self.osd(&format!("{name} left")).await;
+        } else {
+            self.departed.insert(id, (name, Instant::now()));
+        }
+    }
+
+    /// Host: announce guests who dropped off and didn't come back.
+    async fn announce_departures(&mut self) {
+        let gone: Vec<String> = self
+            .departed
+            .iter()
+            .filter(|(_, (_, at))| at.elapsed() > REJOIN_GRACE)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in gone {
+            if let Some((name, _)) = self.departed.remove(&id) {
+                self.osd(&format!("{name} left")).await;
+            }
         }
     }
 
@@ -1861,7 +1911,6 @@ impl Engine {
         let Some(peer) = peers.get_mut(&id) else {
             return;
         };
-        peer.last_seen = Instant::now();
         match msg {
             Msg::Hello {
                 name,
@@ -1873,9 +1922,14 @@ impl Engine {
                 peer.version = version;
                 peer.id = peer_id.clone();
                 peer.code = code;
-                // Reconnecting after a blip: drop the stale entry for this Mac.
+                // Reconnecting after a blip: drop the stale entry for this Mac,
+                // and don't announce them (they never really left).
+                let mut back = false;
                 if !peer_id.is_empty() {
+                    let before = peers.len();
                     peers.retain(|other, p| *other == id || p.id != peer_id);
+                    let was_departed = self.departed.remove(&peer_id).is_some();
+                    back = was_departed || peers.len() != before;
                 }
                 let Some(peer) = peers.get(&id) else { return };
                 let _ = peer.tx.send(Msg::State(self.state.clone()));
@@ -1887,7 +1941,9 @@ impl Engine {
                     scale: self.sub_scale,
                     by: self.sub_scale_by.clone().unwrap_or_default(),
                 });
-                self.osd(&format!("{name} joined")).await;
+                if !back {
+                    self.osd(&format!("{name} joined")).await;
+                }
                 self.refresh_peers();
             }
             Msg::Rename { name } => {

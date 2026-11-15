@@ -122,6 +122,17 @@ fn when_the_host_leaves_the_next_person_takes_over() {
 }
 
 #[test]
+fn when_the_named_successor_is_gone_too_the_next_in_line_takes_over() {
+    let (mut peers, socks) = playing_room(&["Host", "Riya", "Aman"]);
+    // The host hands over to Riya just as Riya's Mac drops off.
+    peers[1].send(UiCmd::TestCrash);
+    peers[0].send(UiCmd::Leave);
+    let s = peers[2].wait("Aman takes over", 30, |s| s.is_host);
+    assert!(s.last_action.unwrap_or_default().contains("is now the host"));
+    assert!(eventually(Duration::from_secs(4), || !paused(&socks[2])), "Aman keeps watching");
+}
+
+#[test]
 fn when_the_host_vanishes_the_next_person_takes_over() {
     let (mut peers, socks) = playing_room(&["Host", "Riya", "Aman"]);
     let watchers = vec![socks[1].clone(), socks[2].clone()];

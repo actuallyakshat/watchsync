@@ -6,8 +6,9 @@ use anyhow::{Result, anyhow};
 use iroh::{Endpoint, EndpointAddr, endpoint::presets};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 pub const ALPN: &[u8] = b"watchsync/0";
@@ -182,6 +183,7 @@ pub enum NetEvent {
     PeerJoined {
         id: u64,
         tx: mpsc::UnboundedSender<Msg>,
+        alive: Liveness,
     },
     FromPeer {
         id: u64,
@@ -206,6 +208,7 @@ pub enum NetEvent {
 pub struct HostLink {
     pub conn: u64,
     pub tx: mpsc::UnboundedSender<Msg>,
+    pub alive: Liveness,
     pub connection: iroh::endpoint::Connection,
     /// The code we dialled.
     pub code: String,
@@ -397,15 +400,67 @@ pub async fn resolve_invite(endpoint: &Endpoint, invite: &str) -> Result<String>
     Ok(encode_code(&lookup_invite(&pkarr_client(endpoint)?, invite).await?))
 }
 
-/// Spawn a task that writes queued messages to the stream as JSON lines.
+/// A stream with nothing to say sends an empty line this often, so the
+/// other side can tell a quiet connection from a dead one. (Older apps skip
+/// lines that don't parse, so they ignore it.)
+const KEEPALIVE: Duration = Duration::from_secs(1);
+
+/// When a connection last heard from the other side: anything at all
+/// (keepalives included), and a real message. Kept by the network tasks
+/// themselves, not the engine: an engine busy for a few seconds (a slow
+/// player, a sleepy Mac) must not take a healthy connection for a dead one
+/// and drop it, which friends see as "left" then "joined".
+#[derive(Clone, Debug)]
+pub struct Liveness(Arc<(AtomicU64, AtomicU64)>);
+
+fn clock_ms() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+impl Liveness {
+    fn new() -> Self {
+        let now = clock_ms();
+        Self(Arc::new((AtomicU64::new(now), AtomicU64::new(now))))
+    }
+
+    fn heard(&self, message: bool) {
+        let now = clock_ms();
+        self.0.0.store(now, Ordering::Relaxed);
+        if message {
+            self.0.1.store(now, Ordering::Relaxed);
+        }
+    }
+
+    /// How long since the other side was last heard from at all.
+    pub fn idle(&self) -> Duration {
+        Duration::from_millis(clock_ms().saturating_sub(self.0.0.load(Ordering::Relaxed)))
+    }
+
+    /// How long since the other side last said something real. Its network
+    /// still sends keepalives if its app is stuck; this tells them apart.
+    pub fn quiet(&self) -> Duration {
+        Duration::from_millis(clock_ms().saturating_sub(self.0.1.load(Ordering::Relaxed)))
+    }
+}
+
+/// Spawn a task that writes queued messages to the stream as JSON lines,
+/// and keepalives when there's nothing to send.
 fn spawn_writer(mut send: iroh::endpoint::SendStream) -> mpsc::UnboundedSender<Msg> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            let Ok(mut line) = serde_json::to_vec(&msg) else {
-                continue;
+        loop {
+            let line = match tokio::time::timeout(KEEPALIVE, rx.recv()).await {
+                Ok(Some(msg)) => {
+                    let Ok(mut line) = serde_json::to_vec(&msg) else {
+                        continue;
+                    };
+                    line.push(b'\n');
+                    line
+                }
+                Ok(None) => break, // the engine let go of this connection
+                Err(_) => b"\n".to_vec(),
             };
-            line.push(b'\n');
             if send.write_all(&line).await.is_err() {
                 break;
             }
@@ -414,15 +469,21 @@ fn spawn_writer(mut send: iroh::endpoint::SendStream) -> mpsc::UnboundedSender<M
     tx
 }
 
-/// Spawn a task that reads JSON lines from the stream.
+/// Spawn a task that reads JSON lines from the stream, noting in `heard`
+/// whenever anything arrives.
 fn spawn_reader(
     recv: iroh::endpoint::RecvStream,
+    heard: Liveness,
     on_msg: impl Fn(Msg) + Send + 'static,
     on_close: impl FnOnce() + Send + 'static,
 ) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(recv).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            heard.heard(!line.is_empty());
+            if line.is_empty() {
+                continue; // keepalive
+            }
             if let Ok(msg) = serde_json::from_str::<Msg>(&line) {
                 on_msg(msg);
             }
@@ -492,11 +553,13 @@ pub fn listen(
                 // Register the peer *before* reading, so its Hello can't
                 // arrive at the engine ahead of PeerJoined.
                 let tx = spawn_writer(send);
-                let _ = events.send(NetEvent::PeerJoined { id, tx });
+                let alive = Liveness::new();
+                let _ = events.send(NetEvent::PeerJoined { id, tx, alive: alive.clone() });
                 let ev_msg = events.clone();
                 let ev_close = events.clone();
                 spawn_reader(
                     recv,
+                    alive,
                     move |msg| {
                         let _ = ev_msg.send(NetEvent::FromPeer { id, msg });
                     },
@@ -524,9 +587,11 @@ pub async fn connect(
     let connection = endpoint.connect(addr, ALPN).await.map_err(err)?;
     let (send, recv) = connection.open_bi().await.map_err(err)?;
     let tx = spawn_writer(send);
+    let alive = Liveness::new();
     let ev_msg = events.clone();
     spawn_reader(
         recv,
+        alive.clone(),
         move |msg| {
             let _ = ev_msg.send(NetEvent::FromHost { conn, msg });
         },
@@ -540,6 +605,7 @@ pub async fn connect(
     Ok(HostLink {
         conn,
         tx,
+        alive,
         connection,
         code: code.trim().to_string(),
     })
