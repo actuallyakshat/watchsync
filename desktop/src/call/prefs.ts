@@ -1,7 +1,8 @@
 import { DEFAULT_MIC, type MicSettings } from "./micChain";
 
-// Call settings remembered on this Mac. Mic and camera start off the first
-// time; after that a room starts the way you last left them.
+// Call settings remembered on this Mac. The mic starts off the first time;
+// after that a room starts with it the way you last left it. The camera
+// always starts off (`cam` is kept, but not used to turn it on).
 export interface CallPrefs {
   mic: boolean;
   cam: boolean;

@@ -36,7 +36,7 @@ Both also install WatchSync's helper apps, mpv (the video player) and croc
   while the movie keeps playing. If the host leaves or their Mac goes to
   sleep, the next person who joined takes over as host.
 - **Video call built in**: being in a room is being in the call (mic and
-  camera off until you turn them on). The call floats in a small
+  camera off until you turn them on; the camera starts off in every room). The call floats in a small
   always-on-top window you can put anywhere, even over the movie in
   fullscreen: a strip showing who's here, or expanded to show whoever's
   talking or everyone. It comes back where you left it.

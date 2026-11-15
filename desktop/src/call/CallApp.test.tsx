@@ -104,6 +104,15 @@ test("the next room starts with the mic the way you left it, and leaving lets go
   expect(FakePC.all[0].closed).toBe(true);
 });
 
+test("the camera starts off in every room, even if it was on last time", async () => {
+  localStorage.setItem(CALL_KEY, JSON.stringify({ mic: false, cam: true }));
+  await start();
+  await waitFor(() => expect(FakePC.all).toHaveLength(1));
+  expect(getUserMedia).not.toHaveBeenCalled();
+  expect(sent).toContainEqual({ type: "set_call", mic: false, cam: false });
+  expect(screen.getByRole("button", { name: "Turn your camera on" })).toBeInTheDocument();
+});
+
 test("a blocked camera says where to allow it", async () => {
   getUserMedia.mockRejectedValueOnce(new DOMException("no", "NotAllowedError"));
   await start();

@@ -241,14 +241,13 @@ export function CallApp() {
     return () => void un.then((f) => f());
   }, []);
 
-  // Entering a room: connect, and start the way you last left things.
+  // Entering a room: connect, with the mic the way you last left it. The
+  // camera always starts off: nobody appears on camera without choosing to.
   // Leaving: hang up and let go of the camera and mic.
   useEffect(() => {
     const m = mesh.current!;
     if (inRoom) {
-      const p = loadPrefs();
-      if (p.mic) void setDevice("audio", true, false);
-      if (p.cam) void setDevice("video", true, false);
+      if (loadPrefs().mic) void setDevice("audio", true, false);
     } else {
       m.close();
       void setDevice("audio", false, false);
