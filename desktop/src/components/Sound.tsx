@@ -21,10 +21,19 @@ interface Props {
   playerOpen: boolean;
   onTrack: (kind: TrackKind, id: number | null) => void;
   onComfort: (c: Comfort) => void;
+  /** The room's subtitle size, the same for everyone. */
+  subScale: number;
+  subScaleBy: string | null;
+  onSubScale: (scale: number) => void;
 }
 
+/** Subtitle sizes, in 10% steps (the engine allows 50–300%). */
+const SUB_MIN = 0.5;
+const SUB_MAX = 3;
+const SUB_STEP = 0.1;
+
 /** Personal settings: only change this person's sound and subtitles. */
-export function Sound({ tracks, comfort, playerOpen, onTrack, onComfort }: Props) {
+export function Sound({ tracks, comfort, playerOpen, onTrack, onComfort, subScale, subScaleBy, onSubScale }: Props) {
   const audio = tracks.filter((t) => t.kind === "audio");
   const subs = tracks.filter((t) => t.kind === "subtitle");
   const selected = (list: Track[]) => list.find((t) => t.selected)?.id ?? null;
@@ -33,7 +42,7 @@ export function Sound({ tracks, comfort, playerOpen, onTrack, onComfort }: Props
     <section className="section" aria-labelledby="sound-head">
       <div className="section-head">
         <h2 id="sound-head">Sound and subtitles</h2>
-        <span>Just for you</span>
+        <span>Just for you, except subtitle size</span>
       </div>
       <div className="sound">
         <label className="field">
@@ -66,6 +75,34 @@ export function Sound({ tracks, comfort, playerOpen, onTrack, onComfort }: Props
             ))}
           </select>
         </label>
+        <div className="field sub-size">
+          <span>Subtitle size</span>
+          <div className="stepper" role="group" aria-label="Subtitle size">
+            <button
+              onClick={() => onSubScale(Math.max(SUB_MIN, Math.round((subScale - SUB_STEP) * 20) / 20))}
+              disabled={subScale <= SUB_MIN}
+              aria-label="Smaller subtitles"
+            >
+              −
+            </button>
+            <span className="stepper-value">{Math.round(subScale * 100)}%</span>
+            <button
+              onClick={() => onSubScale(Math.min(SUB_MAX, Math.round((subScale + SUB_STEP) * 20) / 20))}
+              disabled={subScale >= SUB_MAX}
+              aria-label="Bigger subtitles"
+            >
+              +
+            </button>
+            {subScale !== 1 && (
+              <button className="link" onClick={() => onSubScale(1)}>
+                Reset
+              </button>
+            )}
+          </div>
+          <small>
+            {subScaleBy && subScale !== 1 ? `Set by ${subScaleBy}, for everyone` : "For everyone. F and G work in the movie window too"}
+          </small>
+        </div>
         <Toggle
           label="Even out volume"
           hint="Quieter explosions, louder whispers"

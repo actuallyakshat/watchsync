@@ -31,6 +31,8 @@ pub enum UiCmd {
     SeekBy { seconds: f64 },
     SeekTo { position: f64 },
     SetCrop { crop: Crop },
+    /// Subtitle size for everyone (1 = normal).
+    SetSubScale { scale: f64 },
     SetName { name: String },
     Chat { text: String },
     /// Pick this person's audio or subtitle track (`id: None` = off).
@@ -247,6 +249,9 @@ pub struct Snapshot {
     pub crop_by: Option<String>,
     /// Whether the crop is actually applied to this player.
     pub crop_applied: bool,
+    /// The room's subtitle size (1 = normal) and who set it.
+    pub sub_scale: f64,
+    pub sub_scale_by: Option<String>,
     /// Lost the host; reconnecting (or waiting for a new host) in the background.
     pub reconnecting: bool,
     /// How many times this session has reconnected after losing the host.
@@ -395,6 +400,10 @@ struct Engine {
     crop_by: Option<String>,
     /// (player generation, crop) last applied to mpv.
     applied_crop: Option<(u64, Crop)>,
+    /// The room's subtitle size, like the crop.
+    sub_scale: f64,
+    sub_scale_by: Option<String>,
+    applied_sub_scale: Option<(u64, f64)>,
 
     /// This person's mic / camera in the call.
     mic: bool,
@@ -468,6 +477,9 @@ pub async fn run_with(
         crop: Crop::Original,
         crop_by: None,
         applied_crop: None,
+        sub_scale: 1.0,
+        sub_scale_by: None,
+        applied_sub_scale: None,
         mic: false,
         cam: false,
         player_fullscreen: false,
@@ -590,6 +602,12 @@ impl Engine {
             UiCmd::SetCrop { crop } => {
                 if crop != self.crop {
                     self.submit(Intent::SetCrop { crop }).await;
+                }
+            }
+            UiCmd::SetSubScale { scale } => {
+                let scale = clean_sub_scale(scale);
+                if scale != self.sub_scale {
+                    self.submit(Intent::SetSubScale { scale }).await;
                 }
             }
             UiCmd::SetName { name } => self.rename(name).await,
@@ -782,6 +800,8 @@ impl Engine {
         self.clock = ClockSync::default();
         self.crop = Crop::Original;
         self.crop_by = None;
+        self.sub_scale = 1.0;
+        self.sub_scale_by = None;
         self.chat.clear();
         self.my_offer = None;
         self.offers.clear();
@@ -800,6 +820,7 @@ impl Engine {
         self.mpv = None;
         self.mpv_gen += 1;
         self.applied_crop = None;
+        self.applied_sub_scale = None;
         self.drift_ms = None;
         self.player_fullscreen = false;
         // The call window sets these again when it joins the next call.
@@ -822,6 +843,15 @@ impl Engine {
         let geometry = crop_geometry(w, h, dw, dh, self.crop);
         if mpv.set_crop(&geometry).await.is_ok() {
             self.applied_crop = Some(wanted);
+        }
+    }
+
+    /// Apply the room's subtitle size to the player if it isn't already.
+    async fn apply_sub_scale(&mut self) {
+        let Some(mpv) = self.mpv.clone() else { return };
+        let wanted = (self.mpv_gen, self.sub_scale);
+        if self.applied_sub_scale != Some(wanted) && mpv.set_sub_scale(self.sub_scale).await.is_ok() {
+            self.applied_sub_scale = Some(wanted);
         }
     }
 
@@ -883,8 +913,10 @@ impl Engine {
                 self.drift_ms = None;
                 self.applied_crop = None;
                 self.applied_comfort = None;
+                self.applied_sub_scale = None;
                 self.resync().await;
                 self.apply_crop().await;
+                self.apply_sub_scale().await;
                 self.apply_comfort().await;
             }
             Err(e) => self.error = Some(e.to_string()),
@@ -928,6 +960,15 @@ impl Engine {
                 s.position = position.max(0.0);
                 s.anchor_ms = now;
                 s.action = format!("paused at {}", format_time(position));
+            }
+            Intent::SetSubScale { scale } => {
+                let scale = clean_sub_scale(scale);
+                self.sub_scale = scale;
+                self.sub_scale_by = Some(by.clone());
+                self.broadcast(Msg::SubScale { scale, by: by.clone() });
+                self.osd(&format!("{by} set subtitles to {}%", (scale * 100.0).round())).await;
+                self.apply_sub_scale().await;
+                return;
             }
             Intent::SetCrop { crop } => {
                 self.crop = crop;
@@ -1076,6 +1117,7 @@ impl Engine {
             self.duration = mpv.duration().await.unwrap_or(0.0);
         }
         self.apply_crop().await;
+        self.apply_sub_scale().await;
         self.apply_comfort().await;
         self.expire_transfers();
         self.look_for_host_movie().await;
@@ -1139,6 +1181,19 @@ impl Engine {
                 }
             }
             MpvEvent::Fullscreen(on) => self.player_fullscreen = on,
+            MpvEvent::SubScale(value) => {
+                let scale = clean_sub_scale(value);
+                // Only once the room's size is on this player: before that,
+                // this is just its own starting value being reported.
+                if self.applied_sub_scale != Some((self.mpv_gen, self.sub_scale)) || scale == self.sub_scale {
+                    return;
+                }
+                // The person pressed F/G in the movie window: share it. Take
+                // it now, so the player isn't set back while the host answers.
+                self.sub_scale = scale;
+                self.applied_sub_scale = Some((self.mpv_gen, scale));
+                self.submit(Intent::SetSubScale { scale }).await;
+            }
             MpvEvent::Exited => {
                 self.mpv = None;
                 self.drift_ms = None;
@@ -1199,6 +1254,15 @@ impl Engine {
                         self.crop = crop;
                         self.crop_by = Some(by);
                         self.apply_crop().await;
+                    }
+                    Msg::SubScale { scale, by } => {
+                        let scale = clean_sub_scale(scale);
+                        if scale != self.sub_scale {
+                            self.osd(&format!("{by} set subtitles to {}%", (scale * 100.0).round())).await;
+                        }
+                        self.sub_scale = scale;
+                        self.sub_scale_by = Some(by);
+                        self.apply_sub_scale().await;
                     }
                     Msg::HostLeaving { successor } => self.host_lost(Some(successor)),
                     Msg::Chat { from, text } => {
@@ -1774,6 +1838,10 @@ impl Engine {
                     crop: self.crop,
                     by: self.crop_by.clone().unwrap_or_default(),
                 });
+                let _ = peer.tx.send(Msg::SubScale {
+                    scale: self.sub_scale,
+                    by: self.sub_scale_by.clone().unwrap_or_default(),
+                });
                 self.osd(&format!("{name} joined")).await;
                 self.refresh_peers();
             }
@@ -1964,6 +2032,8 @@ impl Engine {
             crop: self.crop,
             crop_by: self.crop_by.clone(),
             crop_applied: self.applied_crop == Some((self.mpv_gen, self.crop)),
+            sub_scale: self.sub_scale,
+            sub_scale_by: self.sub_scale_by.clone(),
             reconnecting: matches!(self.role, Role::Guest { link: None, .. }),
             reconnects: self.reconnects,
             chat: self.chat.clone(),
@@ -1988,6 +2058,17 @@ impl Engine {
     }
 }
 
+/// Subtitle sizes go from half to triple, in 5% steps.
+pub const SUB_SCALE_MIN: f64 = 0.5;
+pub const SUB_SCALE_MAX: f64 = 3.0;
+
+fn clean_sub_scale(scale: f64) -> f64 {
+    if !scale.is_finite() {
+        return 1.0;
+    }
+    (scale.clamp(SUB_SCALE_MIN, SUB_SCALE_MAX) * 20.0).round() / 20.0
+}
+
 /// One line, trimmed, at most MAX_CHAT characters; None if empty.
 fn clean_chat(text: &str) -> Option<String> {
     let one_line: String = text
@@ -2002,6 +2083,14 @@ fn clean_chat(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subtitle_sizes_are_kept_sensible() {
+        assert_eq!(clean_sub_scale(1.13), 1.15);
+        assert_eq!(clean_sub_scale(9.0), SUB_SCALE_MAX);
+        assert_eq!(clean_sub_scale(0.1), SUB_SCALE_MIN);
+        assert_eq!(clean_sub_scale(f64::NAN), 1.0);
+    }
 
     #[test]
     fn chat_is_one_trimmed_line() {

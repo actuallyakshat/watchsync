@@ -21,6 +21,8 @@ pub enum MpvEvent {
     PlaybackRestart,
     /// The window entered or left fullscreen.
     Fullscreen(bool),
+    /// The subtitle size changed (by us, or the F/G keys).
+    SubScale(f64),
     /// mpv quit (window closed).
     Exited,
 }
@@ -281,6 +283,9 @@ impl Mpv {
                         "property-change" if v["name"] == "fullscreen" => {
                             v["data"].as_bool().map(MpvEvent::Fullscreen)
                         }
+                        "property-change" if v["name"] == "sub-scale" => {
+                            v["data"].as_f64().map(MpvEvent::SubScale)
+                        }
                         "playback-restart" => Some(MpvEvent::PlaybackRestart),
                         _ => None,
                     };
@@ -311,6 +316,7 @@ impl Mpv {
         };
         mpv.command(json!(["observe_property", 1, "pause"])).await?;
         mpv.command(json!(["observe_property", 2, "fullscreen"])).await?;
+        mpv.command(json!(["observe_property", 3, "sub-scale"])).await?;
         Ok(mpv)
     }
 
@@ -411,6 +417,10 @@ impl Mpv {
         self.command(json!(["set_property", "af", comfort.audio_filters()]))
             .await?;
         Ok(())
+    }
+
+    pub async fn set_sub_scale(&self, scale: f64) -> Result<()> {
+        self.command(json!(["set_property", "sub-scale", scale])).await.map(|_| ())
     }
 
     pub async fn toggle_fullscreen(&self) -> Result<()> {

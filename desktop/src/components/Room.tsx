@@ -29,11 +29,12 @@ interface Props {
   onCrop: (crop: Crop) => void;
   onTrack: (kind: TrackKind, id: number | null) => void;
   onComfort: (c: Comfort) => void;
+  onSubScale: (scale: number) => void;
   files: Omit<React.ComponentProps<typeof Files>, "snap">;
   onOpenFound: (path: string) => void;
 }
 
-export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop, onTrack, onComfort, files, onOpenFound }: Props) {
+export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop, onTrack, onComfort, onSubScale, files, onOpenFound }: Props) {
   const host = snap.peers.find((p) => p.is_host);
 
   return (
@@ -83,6 +84,9 @@ export function Room({ snap, onChoose, onToggle, onSeekBy, onSeekTo, onCrop, onT
         playerOpen={snap.player_open}
         onTrack={onTrack}
         onComfort={onComfort}
+        subScale={snap.sub_scale}
+        subScaleBy={snap.sub_scale_by}
+        onSubScale={onSubScale}
       />
     </>
   );

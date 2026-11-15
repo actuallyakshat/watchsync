@@ -470,3 +470,24 @@ test("settings: call shortcuts are recorded and handed to the app", async () => 
   expect(mic).toHaveTextContent("⌃⇧K");
   shortcutError = null;
 });
+
+test("room: subtitle size is shared, and says who set it", async () => {
+  render(<App />);
+  await act(async () => emit(room));
+  const group = screen.getByRole("group", { name: "Subtitle size" });
+  expect(group).toHaveTextContent("100%");
+  expect(screen.getByText(/F and G work in the movie window/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Bigger subtitles" }));
+  expect(sent).toContainEqual({ type: "set_sub_scale", scale: 1.1 });
+
+  await act(async () => emit({ ...room, sub_scale: 1.4, sub_scale_by: "Riya" }));
+  expect(group).toHaveTextContent("140%");
+  expect(screen.getByText("Set by Riya, for everyone")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Smaller subtitles" }));
+  expect(sent).toContainEqual({ type: "set_sub_scale", scale: 1.3 });
+  await userEvent.click(screen.getByRole("button", { name: "Reset" }));
+  expect(sent).toContainEqual({ type: "set_sub_scale", scale: 1 });
+
+  await act(async () => emit({ ...room, sub_scale: 3, sub_scale_by: "Riya" }));
+  expect(screen.getByRole("button", { name: "Bigger subtitles" })).toBeDisabled();
+});

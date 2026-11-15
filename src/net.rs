@@ -20,6 +20,8 @@ pub enum Intent {
     Pause { position: f64 },
     Seek { position: f64 },
     SetCrop { crop: Crop },
+    /// Subtitle size (mpv's sub-scale, 1 = normal).
+    SetSubScale { scale: f64 },
 }
 
 /// A movie file someone offers to send with croc.
@@ -121,6 +123,8 @@ pub enum Msg {
     Peers(Vec<PeerInfo>),
     /// host → all: the room's picture crop and who chose it.
     Crop { crop: Crop, by: String },
+    /// host → all: the room's subtitle size and who chose it.
+    SubScale { scale: f64, by: String },
     /// guest → host: "call me this now".
     Rename { name: String },
     /// host → all: "I'm leaving; this peer (endpoint id) takes over".

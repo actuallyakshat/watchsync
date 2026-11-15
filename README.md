@@ -57,6 +57,8 @@ Both also install WatchSync's helper apps, mpv (the video player) and croc
 - **Same picture for everyone**: pick a crop (4:3, IMAX 1.43:1, 1.66:1, 16:9,
   1.85:1, IMAX 1.90:1, 2.00:1, 2.20:1, 2.39:1, 2.76:1) and every player shows
   exactly the same part of the frame.
+- **Same subtitle size for everyone**: set it in the app, or with F and G in
+  the movie window, and every player follows.
 - **Just for you**: your own audio track and subtitles, volume levelling and
   dialogue boost.
 - **File check**: shows whether everyone's copy matches the host's.

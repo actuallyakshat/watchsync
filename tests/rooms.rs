@@ -256,3 +256,25 @@ fn a_guest_without_the_movie_is_offered_their_copy_found_by_name() {
     let s = riya.wait("opened", 15, |s| s.player_open && s.my_file == watchsync::engine::FileStatus::Match);
     assert!(s.found.is_none(), "suggestion goes away once a movie is open");
 }
+
+#[test]
+fn subtitle_size_is_the_same_for_everyone() {
+    let (mut peers, socks) = playing_room(&["Host", "Riya"]);
+    let sub_scale = |s: &Path| common::ipc(s, serde_json::json!(["get_property", "sub-scale"])).as_f64().unwrap();
+    // Everyone starts at the room's size, whatever their own mpv had.
+    assert!(eventually(Duration::from_secs(3), || socks.iter().all(|s| (sub_scale(s) - 1.0).abs() < 1e-6)));
+
+    // Set from the app by the host.
+    peers[0].send(UiCmd::SetSubScale { scale: 1.4 });
+    peers[1].wait("host's size", 5, |s| (s.sub_scale - 1.4).abs() < 1e-6 && s.sub_scale_by.as_deref() == Some("Host"));
+    assert!(eventually(Duration::from_secs(3), || socks.iter().all(|s| (sub_scale(s) - 1.4).abs() < 1e-6)));
+
+    // Riya presses G in her movie window (mpv's "bigger subtitles" key).
+    common::ipc(&socks[1], serde_json::json!(["add", "sub-scale", 0.1]));
+    peers[0].wait("Riya's size", 5, |s| (s.sub_scale - 1.5).abs() < 1e-6 && s.sub_scale_by.as_deref() == Some("Riya"));
+    assert!(eventually(Duration::from_secs(3), || socks.iter().all(|s| (sub_scale(s) - 1.5).abs() < 1e-6)));
+
+    // Out of range is kept sensible.
+    peers[1].send(UiCmd::SetSubScale { scale: 40.0 });
+    assert!(eventually(Duration::from_secs(3), || socks.iter().all(|s| (sub_scale(s) - 3.0).abs() < 1e-6)));
+}

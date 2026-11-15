@@ -10,6 +10,7 @@ Watch the same movie with friends on separate Macs, in sync. Everyone plays thei
 - **Headphones**: on speakers with your mic on, WatchSync asks for headphones, since friends would hear the movie twice.
 - **Gets through**: if two Macs can't connect directly, the call relays through iroh. Call settings → Troubleshooting can force it and shows each friend's path.
 - The call window comes back where you left it.
+- **Subtitle size is the same for everyone**: change it in the app or with F and G in the movie window.
 
 Everyone in the call needs 0.5.1.
 

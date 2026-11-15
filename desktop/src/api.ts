@@ -97,6 +97,9 @@ export interface Snapshot {
   crop: Crop;
   crop_by: string | null;
   crop_applied: boolean;
+  /** The room's subtitle size (1 = normal) and who set it. */
+  sub_scale: number;
+  sub_scale_by: string | null;
   reconnecting: boolean;
   reconnects: number;
   chat: ChatLine[];
@@ -131,6 +134,7 @@ export type Command =
   | { type: "seek_by"; seconds: number }
   | { type: "seek_to"; position: number }
   | { type: "set_crop"; crop: Crop }
+  | { type: "set_sub_scale"; scale: number }
   | { type: "set_name"; name: string }
   | { type: "chat"; text: string }
   | { type: "react"; reaction: Reaction }
@@ -190,6 +194,8 @@ export const EMPTY: Snapshot = {
   crop: "original",
   crop_by: null,
   crop_applied: false,
+  sub_scale: 1,
+  sub_scale_by: null,
   reconnecting: false,
   reconnects: 0,
   chat: [],
