@@ -90,9 +90,11 @@ fn apply<R: Runtime>(app: &AppHandle<R>, s: &State) -> Result<(), String> {
     Ok(())
 }
 
-/// Main window: use these shortcuts (from Settings).
+/// Main window: use these shortcuts (from Settings). Async, so it runs off
+/// the main thread: registering waits on the main thread while holding the
+/// lock, which would deadlock if the main thread were the one waiting.
 #[tauri::command]
-pub fn set_call_shortcuts(app: AppHandle, mic: String, cam: String) -> Result<(), String> {
+pub async fn set_call_shortcuts(app: AppHandle, mic: String, cam: String) -> Result<(), String> {
     app.state::<Hotkeys>().set(&app, &mic, &cam)
 }
 

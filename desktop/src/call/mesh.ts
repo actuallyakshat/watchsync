@@ -350,7 +350,15 @@ class Link {
         enc.scaleResolutionDownBy = e.scale;
         enc.maxBitrate = e.maxBitrate;
         enc.maxFramerate = 30;
-        await sender.setParameters(p);
+        try {
+          await sender.setParameters(p);
+        } catch {
+          // Some WebKit versions reject `active`: keep the size and bitrate.
+          const q = sender.getParameters();
+          if (!q.encodings?.length) q.encodings = [{}];
+          Object.assign(q.encodings[0], { scaleResolutionDownBy: e.scale, maxBitrate: e.active ? e.maxBitrate : MIN_VIDEO_BITRATE, maxFramerate: 30 });
+          await sender.setParameters(q);
+        }
       })
       .catch((err) => console.warn("couldn't set video quality for", this.id, err));
   }

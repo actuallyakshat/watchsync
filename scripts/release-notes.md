@@ -1,10 +1,20 @@
 Watch the same movie with friends on separate Macs, in sync. Everyone plays their own copy; pause, play or seek on any Mac and it happens for everyone. No accounts.
 
+## New in 0.5.1: a better call
+
+- **See friends right away**: when someone turns their camera on, the call expands to show them. Dragging the strip bigger shows video too, and a green dot marks who has their camera on.
+- **⌥⌘M / ⌥⌘V** turn your mic and camera on or off from any app, even with the movie fullscreen, while you're in a room. Change them in Settings → Call shortcuts.
+- **Quality to match**: friends send you video only as big as you show it (up to 1080p30), and nothing while the call is shrunk.
+- **Your own mix**: a Voices volume and one per friend. Pick your camera and mic in the call window's settings (the gear).
+- **Headphones**: on speakers with your mic on, WatchSync asks for headphones, since friends would hear the movie twice.
+- **Gets through**: if two Macs can't connect directly, the call relays through iroh. Call settings → Troubleshooting can force it and shows each friend's path.
+- The call window comes back where you left it.
+
+Everyone in the call needs 0.5.1.
+
 ## New in 0.5.0: video calls
 
-Being in a room is now being in a call. Mic and camera start off; turn them on from the small call window that floats on top of everything, including the movie in fullscreen. Drag it anywhere, or expand it to see whoever's talking (or everyone, in a grid). Space, arrows and F still control the movie from the call window; M and V toggle your mic and camera.
-
-Use headphones, or your friends will hear the movie twice. This is the first version of calls: shortcuts that work from any app, volume per person and camera/mic pickers are coming.
+Being in a room is now being in a call. Mic and camera start off; turn them on from the small call window that floats on top of everything, including the movie in fullscreen. Use headphones, or your friends will hear the movie twice.
 
 ## Install
 

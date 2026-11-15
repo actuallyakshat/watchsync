@@ -235,3 +235,23 @@ test("each friend's path is read from WebRTC's stats", async () => {
   FakePC.candidateType = "host";
   expect(await r.meshes.get("a")!.paths()).toEqual(new Map([["b", "direct"]]));
 });
+
+test("quality still adapts where WebKit won't pause a sender", async () => {
+  const r = room(["a", "b"]);
+  r.meshes.get("b")!.setTrack("video", new FakeTrack("video") as unknown as MediaStreamTrack);
+  await connect(r);
+  const [pa, pb] = FakePC.all;
+  const sender = pb.transceivers[1].sender;
+  const set = sender.setParameters.bind(sender);
+  sender.setParameters = async (p) => {
+    if ("active" in p.encodings[0]) throw new DOMException("no", "InvalidModificationError");
+    return set(p);
+  };
+  FakePC.openChannels(pa, pb);
+  r.meshes.get("a")!.setWanted("b", { w: 640, h: 400 });
+  await r.deliver();
+  expect(sender.params.encodings[0].scaleResolutionDownBy).toBeGreaterThan(2);
+  r.meshes.get("a")!.setWanted("b", { w: 0, h: 0 });
+  await r.deliver();
+  expect(sender.params.encodings[0].maxBitrate).toBe(MIN_VIDEO_BITRATE);
+});
