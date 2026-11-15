@@ -64,6 +64,8 @@ beforeEach(() => {
   HTMLMediaElement.prototype.play = vi.fn(async () => {});
 });
 
+afterEach(() => vi.unstubAllGlobals());
+
 async function start(s: Snapshot = room) {
   render(<CallApp />);
   await waitFor(() => expect(listeners.has("snapshot")).toBe(true));
@@ -151,4 +153,29 @@ test("signalling goes to the engine addressed to the right person", async () => 
   await waitFor(() => expect(FakePC.all).toHaveLength(1));
   // We have the lower id, so we offer.
   await waitFor(() => expect(sent.some((m) => m.type === "signal" && m.to === "b")).toBe(true));
+});
+
+test("friends are asked for video only as big as it's shown, and none while shrunk", async () => {
+  // Every observed tile is 320×200 CSS pixels on a 2× screen.
+  class RO {
+    constructor(private f: (e: { contentRect: { width: number; height: number } }[]) => void) {}
+    observe() {
+      this.f([{ contentRect: { width: 320, height: 200 } }]);
+    }
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", RO);
+  vi.stubGlobal("devicePixelRatio", 2);
+  await start();
+  await waitFor(() => expect(FakePC.all).toHaveLength(1));
+  const channel = FakePC.all[0].channels[0];
+  channel.readyState = "open";
+  channel.onopen?.();
+  const wants = () => channel.sent.map((m) => JSON.parse(m).want);
+  await waitFor(() => expect(wants().at(-1)).toEqual({ w: 0, h: 0 }));
+
+  emit(riya(true)); // expands
+  await waitFor(() => expect(wants().at(-1)).toEqual({ w: 640, h: 448 }));
+  await userEvent.click(screen.getByRole("button", { name: "Shrink the call" }));
+  await waitFor(() => expect(wants().at(-1)).toEqual({ w: 0, h: 0 }));
 });

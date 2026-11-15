@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EMPTY, onCallExpand, onSignal, onSnapshot, send, type Snapshot } from "../api";
 import { CamIcon, CollapseIcon, ExpandIcon, GridIcon, MicIcon, PinIcon, SelfIcon, SpeakerIcon } from "../components/Icons";
-import { Mesh, type Kind, type Remote, type SignalData } from "./mesh";
+import { Mesh, type Kind, type Remote, type SignalData, type Size } from "./mesh";
 import { loadPrefs, savePrefs, type CallPrefs } from "./prefs";
 import { isTalking, pickSpeaker, track, type Talk } from "./speaker";
 import { PILL_HEIGHT, pillWidth } from "./sizes";
@@ -257,6 +257,18 @@ export function CallApp() {
   }, [snap.player_open, toggle]);
 
   const onBlocked = useCallback(() => setBlocked(true), []);
+
+  // Tell everyone how big we show them, so nobody sends more than is seen
+  // (and nothing while they're off screen, like with the call shrunk).
+  const shownAt = useRef(new Map<string, Size>());
+  const onSize = useCallback((id: string, size: Size) => {
+    if (size.w > 0 && size.h > 0) shownAt.current.set(id, size);
+    else shownAt.current.delete(id);
+    mesh.current!.setWanted(id, size);
+  }, []);
+  useEffect(() => {
+    for (const r of remotes) if (!shownAt.current.has(r.id)) mesh.current!.setWanted(r.id, { w: 0, h: 0 });
+  });
   const hearCall = () => {
     // Inside the click, so WebKit counts it as permission to play sound.
     for (const a of audios.current) void a.play().catch(() => {});
@@ -320,7 +332,7 @@ export function CallApp() {
       {prefs.layout === "grid" || !shown ? (
         <div className="grid" style={{ ["--cols" as string]: Math.ceil(Math.sqrt(people.length + 1)) }} data-tauri-drag-region>
           {people.map((p) => (
-            <Tile key={p.id} person={p} talking={talking(p.id)} onClick={() => (setPinned(p.id), setPrefs({ layout: "speaker" }))} />
+            <Tile key={p.id} person={p} talking={talking(p.id)} onSize={onSize} onClick={() => (setPinned(p.id), setPrefs({ layout: "speaker" }))} />
           ))}
           <Tile person={self} stream={selfStream} talking={mic && talking("")} mirrored />
           {people.length === 0 && (
@@ -331,7 +343,7 @@ export function CallApp() {
         </div>
       ) : (
         <div className="speaker" data-tauri-drag-region>
-          <Tile person={shown} talking={talking(shown.id)} />
+          <Tile key={shown.id} person={shown} talking={talking(shown.id)} onSize={onSize} />
           {prefs.selfView && cam && (
             <div className="self-corner">
               <Tile person={self} stream={selfStream} talking={false} mirrored />
@@ -438,13 +450,31 @@ function Tile({
   talking,
   mirrored,
   onClick,
+  onSize,
 }: {
   person: Person;
   stream?: MediaStream | null;
   talking: boolean;
   mirrored?: boolean;
   onClick?: () => void;
+  /** How big this person is shown, in device pixels (0×0 once gone). */
+  onSize?: (id: string, size: Size) => void;
 }) {
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = box.current;
+    if (!onSize || !el || typeof ResizeObserver === "undefined") return;
+    const id = person.id;
+    const ro = new ResizeObserver(([e]) => {
+      const dpr = window.devicePixelRatio || 1;
+      onSize(id, { w: e.contentRect.width * dpr, h: e.contentRect.height * dpr });
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      onSize(id, { w: 0, h: 0 });
+    };
+  }, [onSize, person.id]);
   const media = stream ?? person.remote?.stream ?? null;
   const version = person.remote?.version ?? 0;
   const hasVideo = person.cam && !!media && media.getVideoTracks().length > 0;
@@ -457,7 +487,7 @@ function Tile({
   }, [media, version, hasVideo]);
 
   return (
-    <div className={`tile ${talking ? "talking" : ""} ${onClick ? "pickable" : ""}`} onClick={onClick} data-tauri-drag-region={onClick ? undefined : true}>
+    <div ref={box} className={`tile ${talking ? "talking" : ""} ${onClick ? "pickable" : ""}`} onClick={onClick} data-tauri-drag-region={onClick ? undefined : true}>
       {hasVideo ? (
         <video ref={video} className={mirrored ? "mirrored" : ""} autoPlay playsInline muted data-tauri-drag-region={onClick ? undefined : true} />
       ) : (

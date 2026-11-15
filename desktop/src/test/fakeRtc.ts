@@ -8,6 +8,9 @@ export class FakeTrack {
   onended: (() => void) | null = null;
   enabled = true;
   constructor(public kind: string) {}
+  getSettings() {
+    return this.kind === "video" ? { width: 1920, height: 1080 } : {};
+  }
   stop() {
     this.readyState = "ended";
   }
@@ -32,6 +35,23 @@ export class FakeStream {
   }
   removeTrack(t: FakeTrack) {
     this.tracks = this.tracks.filter((x) => x !== t);
+  }
+}
+
+export class FakeChannel {
+  readyState = "connecting";
+  sent: string[] = [];
+  other: FakeChannel | null = null;
+  onopen: (() => void) | null = null;
+  onmessage: ((e: { data: string }) => void) | null = null;
+  constructor(public id: number) {}
+  send(data: string) {
+    this.sent.push(data);
+    const o = this.other;
+    if (o) queueMicrotask(() => o.onmessage?.({ data }));
+  }
+  close() {
+    this.readyState = "closed";
   }
 }
 
@@ -75,6 +95,7 @@ export class FakePC {
   ontrack: ((e: { track: FakeTrack }) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
   restarts = 0;
+  channels: FakeChannel[] = [];
   private needPending = false;
   private remoteSet = false;
 
@@ -93,6 +114,23 @@ export class FakePC {
       });
     }
     return t;
+  }
+  createDataChannel(_label: string, init: { id: number }) {
+    const c = new FakeChannel(init.id);
+    this.channels.push(c);
+    return c;
+  }
+  /** Connect two peers' negotiated channels, as if the connection came up. */
+  static openChannels(a: FakePC, b: FakePC) {
+    for (const ca of a.channels) {
+      const cb = b.channels.find((c) => c.id === ca.id);
+      if (!cb) continue;
+      ca.other = cb;
+      cb.other = ca;
+      ca.readyState = cb.readyState = "open";
+      ca.onopen?.();
+      cb.onopen?.();
+    }
   }
   getTransceivers() {
     return this.transceivers;

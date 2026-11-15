@@ -52,6 +52,33 @@ export const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:1930
 
 /** Sent at most this fast; adaptive bitrate works below it. */
 export const MAX_VIDEO_BITRATE = 2_500_000;
+/** Bitrate floor for a small but visible picture. */
+export const MIN_VIDEO_BITRATE = 150_000;
+const FULL_HD = 1920 * 1080;
+
+export interface Size {
+  w: number;
+  h: number;
+}
+
+/** How to encode our camera for someone showing it at `want` device pixels
+ * (null: they haven't said, so send everything; 0×0: they aren't looking).
+ * Tiles crop to fill, so the picture must cover the tile in both directions. */
+export function encodingFor(src: Size | null, want: Size | null): { active: boolean; scale: number; maxBitrate: number } {
+  if (want && (want.w <= 0 || want.h <= 0)) return { active: false, scale: 1, maxBitrate: MIN_VIDEO_BITRATE };
+  if (!want || !src || src.w <= 0 || src.h <= 0) return { active: true, scale: 1, maxBitrate: MAX_VIDEO_BITRATE };
+  const scale = Math.max(1, Math.min(src.w / want.w, src.h / want.h));
+  const pixels = (src.w / scale) * (src.h / scale);
+  // Bitrate grows a little slower than the pixel count.
+  const maxBitrate = Math.round(Math.min(MAX_VIDEO_BITRATE, Math.max(MIN_VIDEO_BITRATE, MAX_VIDEO_BITRATE * (pixels / FULL_HD) ** 0.75)));
+  return { active: true, scale: Math.round(scale * 100) / 100, maxBitrate };
+}
+
+/** Round a tile's size so tiny resizes don't renegotiate quality. */
+export function roundSize({ w, h }: Size): Size {
+  const step = (n: number) => (n <= 0 ? 0 : Math.ceil(n / 64) * 64);
+  return { w: step(w), h: step(h) };
+}
 
 type Send = (to: string, data: SignalData) => void;
 
@@ -130,6 +157,12 @@ export class Mesh {
     await link.onSignal(data);
   }
 
+  /** How big we're showing this person's video, in device pixels (0×0:
+   * not at all). They scale what they send to match. */
+  setWanted(id: string, size: Size) {
+    this.links.get(id)?.want(roundSize(size));
+  }
+
   /** Send this track to everyone (null = stop sending). */
   setTrack(kind: Kind, track: MediaStreamTrack | null) {
     this.tracks[kind] = track;
@@ -186,6 +219,13 @@ class Link {
   private version = 0;
   private tx: Record<Kind, RTCRtpTransceiver | null> = { audio: null, video: null };
   private closed = false;
+  /** Size messages travel here (both sides create it as channel 0). */
+  private channel: RTCDataChannel | null = null;
+  /** How big we show them / they show us. */
+  private wanted: Size | null = null;
+  private theirWant: Size | null = null;
+  /** setParameters calls must not overlap. */
+  private encoding: Promise<void> = Promise.resolve();
   /** Impolite peers win offer collisions; the polite one rolls back. */
   private polite: boolean;
 
@@ -223,7 +263,61 @@ class Link {
         void this.send(kind, this.local(kind));
       }
       preferHardwareVideo(this.tx.video);
+      this.openChannel();
     }
+  }
+
+  want(size: Size) {
+    if (this.wanted && this.wanted.w === size.w && this.wanted.h === size.h) return;
+    this.wanted = size;
+    this.tell();
+  }
+
+  private openChannel() {
+    if (this.channel || typeof this.pc.createDataChannel !== "function") return;
+    try {
+      const c = this.pc.createDataChannel("watchsync", { negotiated: true, id: 0 });
+      c.onopen = () => this.tell();
+      c.onmessage = (e) => {
+        try {
+          const m = JSON.parse(String(e.data));
+          if (m && Number.isFinite(m.want?.w) && Number.isFinite(m.want?.h)) {
+            this.theirWant = { w: m.want.w, h: m.want.h };
+            this.encode();
+          }
+        } catch {
+          // Not ours.
+        }
+      };
+      this.channel = c;
+    } catch (e) {
+      console.warn("no size channel to", this.id, e);
+    }
+  }
+
+  private tell() {
+    if (this.wanted && this.channel?.readyState === "open") this.channel.send(JSON.stringify({ want: this.wanted }));
+  }
+
+  /** Match what we send to how big they show it. */
+  private encode() {
+    const sender = this.tx.video?.sender;
+    if (!sender || this.closed) return;
+    this.encoding = this.encoding
+      .then(async () => {
+        const settings = sender.track?.getSettings?.();
+        const src = settings?.width && settings?.height ? { w: settings.width, h: settings.height } : null;
+        const e = encodingFor(src, this.theirWant);
+        const p = sender.getParameters();
+        if (!p.encodings?.length) p.encodings = [{}];
+        const enc = p.encodings[0];
+        enc.active = e.active;
+        enc.scaleResolutionDownBy = e.scale;
+        enc.maxBitrate = e.maxBitrate;
+        enc.maxFramerate = 30;
+        await sender.setParameters(p);
+      })
+      .catch((err) => console.warn("couldn't set video quality for", this.id, err));
   }
 
   view(): Remote {
@@ -241,7 +335,7 @@ class Link {
     if (!t || this.closed) return; // adopted later, with the current track
     try {
       await t.sender.replaceTrack(track);
-      if (kind === "video" && track) await capBitrate(t.sender);
+      if (kind === "video" && track) this.encode();
     } catch (e) {
       console.warn("couldn't switch the call's", kind, e);
     }
@@ -281,6 +375,8 @@ class Link {
   close() {
     this.closed = true;
     if (this.watchdog) clearTimeout(this.watchdog);
+    if (this.channel) this.channel.onopen = this.channel.onmessage = null;
+    this.channel?.close();
     this.pc.onicecandidate = this.pc.onnegotiationneeded = this.pc.ontrack = this.pc.onconnectionstatechange = null;
     this.pc.close();
   }
@@ -322,6 +418,8 @@ class Link {
       if (kind === "video") preferHardwareVideo(t);
       void this.send(kind, this.local(kind));
     }
+    // The offer carries the size channel's m-line by now.
+    this.openChannel();
   }
 }
 
@@ -344,10 +442,3 @@ function randomId(): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-async function capBitrate(sender: RTCRtpSender) {
-  const p = sender.getParameters();
-  if (!p.encodings?.length) p.encodings = [{}];
-  p.encodings[0].maxBitrate = MAX_VIDEO_BITRATE;
-  p.encodings[0].maxFramerate = 30;
-  await sender.setParameters(p);
-}

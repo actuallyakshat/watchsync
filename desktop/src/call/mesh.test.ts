@@ -1,6 +1,6 @@
 import { FakePC, FakeTrack, installFakeRtc } from "../test/fakeRtc";
 import { vi } from "vitest";
-import { GRACE_MS, MAX_VIDEO_BITRATE, Mesh, RETRY_MS, type SignalData } from "./mesh";
+import { GRACE_MS, MAX_VIDEO_BITRATE, MIN_VIDEO_BITRATE, Mesh, RETRY_MS, encodingFor, roundSize, type SignalData } from "./mesh";
 
 beforeEach(() => {
   installFakeRtc();
@@ -172,4 +172,38 @@ test("signals for someone not yet listed still connect", async () => {
   meshes.get("a")!.sync(["b"]); // b hasn't seen a in the room list yet
   await deliver();
   expect(meshes.get("b")!.remotes().map((r) => r.id)).toEqual(["a"]);
+});
+
+test("the picture is encoded just big enough for how it's shown", () => {
+  const hd = { w: 1920, h: 1080 };
+  expect(encodingFor(hd, null)).toEqual({ active: true, scale: 1, maxBitrate: MAX_VIDEO_BITRATE });
+  // A 640×400 tile crops a 16:9 picture to fill: it needs 711×400.
+  const small = encodingFor(hd, { w: 640, h: 400 });
+  expect(small.scale).toBe(2.7);
+  expect(small.maxBitrate).toBeLessThan(MAX_VIDEO_BITRATE / 3);
+  expect(small.maxBitrate).toBeGreaterThan(MIN_VIDEO_BITRATE);
+  // Never upscaled; nothing sent when not shown.
+  expect(encodingFor(hd, { w: 3840, h: 2160 }).scale).toBe(1);
+  expect(encodingFor(hd, { w: 0, h: 0 }).active).toBe(false);
+  expect(roundSize({ w: 641, h: 399 })).toEqual({ w: 704, h: 448 });
+});
+
+test("each person sends their camera at the size the other shows it", async () => {
+  const r = room(["a", "b"]);
+  const cam = new FakeTrack("video");
+  r.meshes.get("b")!.setTrack("video", cam as unknown as MediaStreamTrack);
+  await connect(r);
+  const [pa, pb] = FakePC.all;
+  FakePC.openChannels(pa, pb);
+  const bVideo = pb.transceivers[1].sender;
+  await r.deliver();
+  expect(bVideo.params.encodings[0]).toMatchObject({ active: true, scaleResolutionDownBy: 1 });
+
+  r.meshes.get("a")!.setWanted("b", { w: 640, h: 400 });
+  await r.deliver();
+  expect(bVideo.params.encodings[0].scaleResolutionDownBy).toBeGreaterThan(2);
+
+  r.meshes.get("a")!.setWanted("b", { w: 0, h: 0 }); // a shrank the call
+  await r.deliver();
+  expect(bVideo.params.encodings[0].active).toBe(false);
 });
