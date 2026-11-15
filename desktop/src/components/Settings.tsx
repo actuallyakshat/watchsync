@@ -3,6 +3,7 @@ import { cleanName, MAX_NAME } from "../name";
 import type { PlayerSetup } from "../api";
 import type { UpdateState } from "../update";
 import { CheckIcon } from "./Icons";
+import { DEFAULT_SHORTCUTS, fromEvent, label, type Shortcuts } from "../shortcuts";
 
 interface Props {
   name: string;
@@ -13,13 +14,17 @@ interface Props {
   onUpdate: () => void;
   setup: PlayerSetup | null;
   onInstallHelpers: () => Promise<void>;
+  shortcuts: Shortcuts;
+  /** Rejects with a message if the shortcuts can't be used. */
+  onShortcuts: (s: Shortcuts) => Promise<void>;
 }
 
-export function Settings({ name, version, update, onRename, onCheck, onUpdate, setup, onInstallHelpers }: Props) {
+export function Settings({ name, version, update, onRename, onCheck, onUpdate, setup, onInstallHelpers, shortcuts, onShortcuts }: Props) {
   return (
     <div className="settings">
       <h1 className="page-title">Settings</h1>
       <NameSection name={name} onRename={onRename} />
+      <ShortcutsSection shortcuts={shortcuts} onChange={onShortcuts} />
       {setup && <HelpersSection setup={setup} onInstall={onInstallHelpers} />}
       <UpdatesSection version={version} update={update} onCheck={onCheck} onUpdate={onUpdate} />
     </div>
@@ -201,6 +206,70 @@ function HelpersSection({ setup, onInstall }: { setup: PlayerSetup; onInstall: (
               {busy ? "Installing…" : `Install ${missing.join(" and ")}`}
             </button>
           )
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ShortcutsSection({ shortcuts, onChange }: { shortcuts: Shortcuts; onChange: (s: Shortcuts) => Promise<void> }) {
+  const [recording, setRecording] = useState<keyof Shortcuts | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const change = async (next: Shortcuts) => {
+    try {
+      await onChange(next);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const record = (which: keyof Shortcuts) => (e: React.KeyboardEvent) => {
+    if (recording !== which) return;
+    e.preventDefault();
+    if (e.key === "Escape") return setRecording(null);
+    const shortcut = fromEvent(e.nativeEvent);
+    if (!shortcut) return; // still holding modifiers
+    setRecording(null);
+    void change({ ...shortcuts, [which]: shortcut });
+  };
+
+  const field = (which: keyof Shortcuts, what: string) => (
+    <button
+      className={`shortcut ${recording === which ? "recording" : ""}`}
+      onClick={() => setRecording(recording === which ? null : which)}
+      onKeyDown={record(which)}
+      onBlur={() => setRecording(null)}
+      aria-label={`${what} shortcut`}
+    >
+      {recording === which ? "Press keys…" : label(shortcuts[which])}
+    </button>
+  );
+
+  const isDefault = shortcuts.mic === DEFAULT_SHORTCUTS.mic && shortcuts.cam === DEFAULT_SHORTCUTS.cam;
+  return (
+    <section className="setting" aria-labelledby="shortcuts-head">
+      <div className="setting-text">
+        <h2 id="shortcuts-head">Call shortcuts</h2>
+        <p>Turn your mic and camera on or off from any app, even with the movie fullscreen. They only work while you're in a room.</p>
+        {error && (
+          <p className="setting-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+      <div className="setting-control shortcuts">
+        <label>
+          Mic {field("mic", "Mic")}
+        </label>
+        <label>
+          Camera {field("cam", "Camera")}
+        </label>
+        {!isDefault && (
+          <button className="link" onClick={() => void change(DEFAULT_SHORTCUTS)}>
+            Reset
+          </button>
         )}
       </div>
     </section>

@@ -3,7 +3,7 @@
 // as a small strip (who's here, mic, camera) or expanded to show video. It
 // stays on top of everything, including the movie in fullscreen.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EMPTY, onCallExpand, onSignal, onSnapshot, send, type Snapshot } from "../api";
+import { EMPTY, onCallExpand, onCallShortcut, onSignal, onSnapshot, send, type Snapshot } from "../api";
 import { CamIcon, CollapseIcon, ExpandIcon, GridIcon, MicIcon, PinIcon, SelfIcon, SpeakerIcon } from "../components/Icons";
 import { Mesh, type Kind, type Remote, type SignalData, type Size } from "./mesh";
 import { loadPrefs, savePrefs, type CallPrefs } from "./prefs";
@@ -143,6 +143,14 @@ export function CallApp() {
     },
     [mic, cam, setDevice, snap.player_open],
   );
+
+  // ⌥⌘M / ⌥⌘V (or whatever's set) from any app.
+  const toggleRef = useRef(toggle);
+  toggleRef.current = toggle;
+  useEffect(() => {
+    const un = onCallShortcut((action) => void toggleRef.current(action === "mic" ? "audio" : "video"));
+    return () => void un.then((f) => f());
+  }, []);
 
   // Entering a room: connect, and start the way you last left things.
   // Leaving: hang up and let go of the camera and mic.

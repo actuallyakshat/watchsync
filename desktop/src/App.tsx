@@ -3,7 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { open, ask } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { EMPTY, installCroc, installPlayer, onSnapshot, playerSetup, send, showCall, type Comfort, type PlayerSetup, type Snapshot } from "./api";
+import { EMPTY, installCroc, installPlayer, onSnapshot, playerSetup, send, setCallShortcuts, showCall, type Comfort, type PlayerSetup, type Snapshot } from "./api";
 import { Sidebar } from "./components/Sidebar";
 import { Home } from "./components/Home";
 import { Room } from "./components/Room";
@@ -12,6 +12,7 @@ import { Settings } from "./components/Settings";
 import { BackIcon, LeaveIcon } from "./components/Icons";
 import { saveComfort, savedComfort, saveName, savedName } from "./name";
 import { useUpdater } from "./update";
+import { saveShortcuts, savedShortcuts, type Shortcuts } from "./shortcuts";
 
 const VIDEO_EXTENSIONS = ["mkv", "mp4", "m4v", "mov", "avi", "webm", "ts", "wmv", "flv", "mpg", "mpeg"];
 
@@ -20,6 +21,7 @@ export function App() {
   const [setup, setSetup] = useState<PlayerSetup | null>(null);
   const [version, setVersion] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcuts, setShortcuts] = useState<Shortcuts>(savedShortcuts);
   const updater = useUpdater();
 
   useEffect(() => {
@@ -30,6 +32,8 @@ export function App() {
     if (comfort) void send({ type: "set_comfort", comfort });
     void getVersion().then(setVersion);
     void playerSetup().then(setSetup);
+    const keys = savedShortcuts();
+    void setCallShortcuts(keys.mic, keys.cam).catch(() => {});
     return () => void unlisten.then((f) => f());
   }, []);
 
@@ -185,6 +189,12 @@ export function App() {
               version={version}
               update={updater.state}
               onRename={rename}
+              shortcuts={shortcuts}
+              onShortcuts={async (next) => {
+                await setCallShortcuts(next.mic, next.cam);
+                saveShortcuts(next);
+                setShortcuts(next);
+              }}
               onCheck={() => void updater.checkNow()}
               onUpdate={runUpdate}
               setup={setup}

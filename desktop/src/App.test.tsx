@@ -6,6 +6,7 @@ import { EMPTY } from "./api";
 
 // --- Tauri, mocked ---------------------------------------------------------
 const sent: unknown[] = [];
+let shortcutError: string | null = null;
 let emit: (s: Snapshot) => void = () => {};
 let setup = { installed: true, has_brew: true, croc: true };
 let pendingUpdate: { version: string; downloadAndInstall: () => Promise<void> } | null = null;
@@ -14,6 +15,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { cmd: unknown }) => {
     if (cmd === "send") sent.push(args!.cmd);
     if (cmd === "player_setup") return setup;
+    if (cmd === "set_call_shortcuts" && shortcutError) throw shortcutError;
     return undefined;
   }),
 }));
@@ -443,4 +445,28 @@ test("suggests the host's movie when it's found on this Mac", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Open it" }));
   expect(sent).toContainEqual({ type: "open_file", path });
   expect(screen.getByRole("button", { name: "Choose a different file…" })).toBeInTheDocument();
+});
+
+test("settings: call shortcuts are recorded and handed to the app", async () => {
+  localStorage.removeItem("watchsync.shortcuts");
+  render(<App />);
+  const { invoke } = await import("@tauri-apps/api/core");
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_call_shortcuts", { mic: "Alt+Command+KeyM", cam: "Alt+Command+KeyV" }));
+  await openSettings();
+  const mic = screen.getByRole("button", { name: "Mic shortcut" });
+  expect(mic).toHaveTextContent("⌥⌘M");
+  await userEvent.click(mic);
+  expect(mic).toHaveTextContent("Press keys…");
+  await userEvent.keyboard("{Control>}{Shift>}k{/Shift}{/Control}");
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("set_call_shortcuts", { mic: "Control+Shift+KeyK", cam: "Alt+Command+KeyV" }));
+  expect(mic).toHaveTextContent("⌃⇧K");
+  expect(JSON.parse(localStorage.getItem("watchsync.shortcuts")!).mic).toBe("Control+Shift+KeyK");
+
+  // One another app already uses: say so, keep the old one.
+  shortcutError = "Alt+KeyX is taken by another app";
+  await userEvent.click(mic);
+  await userEvent.keyboard("{Alt>}x{/Alt}");
+  expect(await screen.findByRole("alert")).toHaveTextContent("taken by another app");
+  expect(mic).toHaveTextContent("⌃⇧K");
+  shortcutError = null;
 });

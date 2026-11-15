@@ -2,6 +2,8 @@
 //! crate. The engine runs on its own tokio runtime; the UI sends it commands
 //! and receives a `snapshot` event whenever something changes.
 
+mod hotkeys;
+
 use serde::Serialize;
 use tauri::{Emitter, Manager, RunEvent, State};
 use watchsync::engine::{self, Options, Phase, SignalIn, Snapshot, UiCmd};
@@ -65,7 +67,7 @@ async fn install_player() -> Result<(), String> {
 
 /// The call window: always there while in a room (it carries the call's
 /// audio even when collapsed), hidden otherwise.
-const CALL: &str = "call";
+pub(crate) const CALL: &str = "call";
 
 /// "Show call" in the main window: bring the call window up, expanded.
 #[tauri::command]
@@ -113,8 +115,10 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         // watchsync://join/<code> links open the app and join the room.
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Bridge { cmd: cmd_tx })
-        .invoke_handler(tauri::generate_handler![send, player_setup, install_player, install_croc, show_call])
+        .manage(hotkeys::Hotkeys::default())
+        .invoke_handler(tauri::generate_handler![send, player_setup, install_player, install_croc, show_call, hotkeys::set_call_shortcuts])
         .setup(move |app| {
             // Push every engine snapshot to the window.
             let handle = app.handle().clone();
@@ -127,6 +131,7 @@ pub fn run() {
                         if let Some(w) = handle.get_webview_window(CALL) {
                             let _ = if in_room { w.show() } else { w.hide() };
                         }
+                        handle.state::<hotkeys::Hotkeys>().set_active(&handle, in_room);
                     }
                     let _ = handle.emit("snapshot", &snap);
                 }

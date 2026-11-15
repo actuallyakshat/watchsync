@@ -871,6 +871,40 @@ ul {
   width: 280px;
 }
 
+.setting-control.shortcuts {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.setting-control.shortcuts label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.shortcut {
+  min-width: 76px;
+  padding: 5px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.shortcut.recording {
+  border-color: var(--signal);
+  color: var(--signal);
+}
+
+.setting-error {
+  margin-top: 6px;
+  color: var(--s-blocked);
+}
+
 .name-input {
   font-family: var(--sans) !important;
   font-size: 13px !important;

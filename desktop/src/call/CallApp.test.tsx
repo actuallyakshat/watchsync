@@ -179,3 +179,13 @@ test("friends are asked for video only as big as it's shown, and none while shru
   await userEvent.click(screen.getByRole("button", { name: "Shrink the call" }));
   await waitFor(() => expect(wants().at(-1)).toEqual({ w: 0, h: 0 }));
 });
+
+test("the mic shortcut works from any app and says so on the movie", async () => {
+  await start();
+  await waitFor(() => expect(listeners.has("call-shortcut")).toBe(true));
+  act(() => listeners.get("call-shortcut")!({ payload: "mic" }));
+  await waitFor(() => expect(sent).toContainEqual({ type: "set_call", mic: true, cam: false }));
+  expect(sent).toContainEqual({ type: "notify", text: "Mic on" });
+  act(() => listeners.get("call-shortcut")!({ payload: "mic" }));
+  await waitFor(() => expect(sent).toContainEqual({ type: "notify", text: "Mic muted" }));
+});

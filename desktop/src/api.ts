@@ -156,6 +156,10 @@ export const playerSetup = () => invoke<PlayerSetup>("player_setup");
 export const installPlayer = () => invoke<void>("install_player");
 export const installCroc = () => invoke<void>("install_croc");
 export const showCall = () => invoke<void>("show_call");
+export const setCallShortcuts = (mic: string, cam: string) => invoke<void>("set_call_shortcuts", { mic, cam });
+/** A call shortcut was pressed, anywhere on the Mac. */
+export const onCallShortcut = (f: (action: "mic" | "cam") => void): Promise<UnlistenFn> =>
+  listen<"mic" | "cam">("call-shortcut", (e) => f(e.payload));
 export const onSnapshot = (f: (s: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>("snapshot", (e) => f(e.payload));
 export const onSignal = (f: (s: SignalIn) => void): Promise<UnlistenFn> =>

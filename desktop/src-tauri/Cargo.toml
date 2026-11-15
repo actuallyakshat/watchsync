@@ -30,3 +30,4 @@ async-channel = "2"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tauri-plugin-deep-link = "2"
 anyhow = "1"
+tauri-plugin-global-shortcut = "2"
