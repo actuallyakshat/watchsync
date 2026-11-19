@@ -1,5 +1,15 @@
 Watch the same movie with friends on separate Macs, in sync. Everyone plays their own copy; pause, play or seek on any Mac and it happens for everyone. No accounts.
 
+## New in 0.6.1: a better call
+
+- **Pin anything**: hover a tile to pin it to the big spot: a friend, their shared screen, or yourself. Pin a friend while they share and their screen stays in view, small.
+- **A filmstrip**: everyone else sits in small tiles beside (or under) the big one. Click one to bring it up. In a small window, the most useful one sits in the corner.
+- **Share your Mac's sound** with your screen: tick "Share sound from this Mac" in the share menu, or use the sound button while sharing. The movie and the call are never included, so nobody hears them twice. Friends get a separate volume for it. Needs macOS 14.2 or later; the first time, macOS asks to allow System Audio Recording.
+- **Tooltips** on every button in the call window.
+- A tidier grid: tiles keep their shape and fill the window.
+
+Everyone in the call needs 0.6.1.
+
 ## New in 0.6.0: share your screen
 
 - **Share your screen or a window**, like Google Meet: click the screen button in the call window, choose **Your entire screen** or **A window**, then pick it in macOS's picker. Stop with the red button, or from the macOS menu bar.
