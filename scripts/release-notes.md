@@ -1,5 +1,13 @@
 Watch the same movie with friends on separate Macs, in sync. Everyone plays their own copy; pause, play or seek on any Mac and it happens for everyone. No accounts.
 
+## New in 0.6.0: share your screen
+
+- **Share your screen or a window**, like Google Meet: click the screen button in the call window, choose **Your entire screen** or **A window**, then pick it in macOS's picker. Stop with the red button, or from the macOS menu bar.
+- **See what a friend shares**: when someone starts sharing, the call opens up and shows their screen whole in the big spot. In the grid it's a tile of its own; click it to pin it.
+- **Crisper voices**: the call now sends full-band, higher-bitrate audio, so voices sound less like a phone.
+
+Everyone in the call needs 0.6.0 to see shared screens. The first time you share, macOS may ask to allow WatchSync in System Settings → Privacy & Security → Screen & System Audio Recording. Choosing what to share uses macOS's picker, from macOS 14 (Sonoma) on.
+
 ## New in 0.5.3
 
 - **Your camera starts off in every room**, even if you left it on last time. Turn it on when you're ready. Your mic still starts the way you left it.
