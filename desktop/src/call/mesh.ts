@@ -79,6 +79,52 @@ export function encodingFor(src: Size | null, want: Size | null): { active: bool
   return { active: true, scale: Math.round(scale * 100) / 100, maxBitrate };
 }
 
+/** Voice bitrate. Opus defaults to ~32 kbps, which sounds like a phone;
+ * Discord sends about 64. Even four people stay well under 1 Mbps. */
+export const VOICE_BITRATE = 96_000;
+const OPUS_PARAMS: Record<string, string> = {
+  maxaveragebitrate: String(VOICE_BITRATE),
+  maxplaybackrate: "48000",
+  "sprop-maxcapturerate": "48000",
+  useinbandfec: "1",
+};
+
+/** Asks the other side to send full-band, high-bitrate Opus. Applied to
+ * the description we *receive*: WebRTC sets up our encoder from their
+ * Opus parameters, so this is what changes the sound we send. */
+export function richOpus(sdp: string): string {
+  const eol = sdp.includes("\r\n") ? "\r\n" : "\n";
+  const lines = sdp.split(eol);
+  const pts = new Set<string>();
+  for (const l of lines) {
+    const m = /^a=rtpmap:(\d+) opus\/48000/i.exec(l);
+    if (m) pts.add(m[1]);
+  }
+  if (!pts.size) return sdp;
+  const fmtp = (pt: string, existing: string) => {
+    const params = new Map<string, string>();
+    for (const kv of existing.split(";")) {
+      const [k, v = ""] = kv.trim().split("=");
+      if (k) params.set(k, v);
+    }
+    for (const [k, v] of Object.entries(OPUS_PARAMS)) params.set(k, v);
+    return `a=fmtp:${pt} ${[...params].map(([k, v]) => `${k}=${v}`).join(";")}`;
+  };
+  const withFmtp = new Set<string>();
+  const out = lines.map((l) => {
+    const m = /^a=fmtp:(\d+) (.*)$/.exec(l);
+    if (!m || !pts.has(m[1])) return l;
+    withFmtp.add(m[1]);
+    return fmtp(m[1], m[2]);
+  });
+  return out
+    .flatMap((l) => {
+      const m = /^a=rtpmap:(\d+) /.exec(l);
+      return m && pts.has(m[1]) && !withFmtp.has(m[1]) ? [l, fmtp(m[1], "")] : [l];
+    })
+    .join(eol);
+}
+
 /** Round a tile's size so tiny resizes don't renegotiate quality. */
 export function roundSize({ w, h }: Size): Size {
   const step = (n: number) => (n <= 0 ? 0 : Math.ceil(n / 64) * 64);
@@ -417,7 +463,7 @@ class Link {
           description.type === "offer" && (this.makingOffer || this.pc.signalingState !== "stable");
         this.ignoreOffer = !this.polite && collision;
         if (this.ignoreOffer) return;
-        await this.pc.setRemoteDescription(description);
+        await this.pc.setRemoteDescription(description.sdp ? { ...description, sdp: richOpus(description.sdp) } : description);
         if (description.type === "offer") {
           this.adopt();
           await this.pc.setLocalDescription();

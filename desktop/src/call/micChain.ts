@@ -51,7 +51,10 @@ export async function processMic(raw: MediaStreamTrack, settings: MicSettings): 
   if (typeof AudioContext === "undefined" || typeof AudioWorkletNode === "undefined") return null;
   let ctx: AudioContext | null = null;
   try {
-    ctx = new AudioContext({ latencyHint: "interactive" });
+    // Pinned to 48 kHz: by default it follows the output device, and a
+    // Bluetooth headset in call mode runs at 16–24 kHz, which would cut the
+    // mic down to phone quality before it's ever sent.
+    ctx = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
     await ctx.audioWorklet.addModule(new URL("./voiceGate.worklet.js", import.meta.url));
     // A page that's capturing may start audio by itself; if WebKit holds it
     // back anyway, send the plain mic rather than silence.

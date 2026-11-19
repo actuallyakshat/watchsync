@@ -1,6 +1,6 @@
 import { FakePC, FakeTrack, installFakeRtc } from "../test/fakeRtc";
 import { vi } from "vitest";
-import { GRACE_MS, MAX_VIDEO_BITRATE, MIN_VIDEO_BITRATE, Mesh, RETRY_MS, encodingFor, roundSize, type SignalData } from "./mesh";
+import { GRACE_MS, MAX_VIDEO_BITRATE, MIN_VIDEO_BITRATE, Mesh, RETRY_MS, encodingFor, richOpus, roundSize, type SignalData } from "./mesh";
 
 beforeEach(() => {
   installFakeRtc();
@@ -254,4 +254,27 @@ test("quality still adapts where WebKit won't pause a sender", async () => {
   r.meshes.get("a")!.setWanted("b", { w: 0, h: 0 });
   await r.deliver();
   expect(sender.params.encodings[0].maxBitrate).toBe(MIN_VIDEO_BITRATE);
+});
+
+describe("richOpus", () => {
+  const sdp = (...lines: string[]) => ["v=0", "m=audio 9 UDP/TLS/RTP/SAVPF 111 63 0", ...lines, ""].join("\r\n");
+
+  test("raises Opus's bitrate, keeping what was there", () => {
+    const out = richOpus(sdp("a=rtpmap:111 opus/48000/2", "a=fmtp:111 minptime=10;useinbandfec=1", "a=rtpmap:0 PCMU/8000"));
+    expect(out).toContain("a=fmtp:111 minptime=10;useinbandfec=1;maxaveragebitrate=96000;maxplaybackrate=48000;sprop-maxcapturerate=48000\r\n");
+    expect(out).toContain("a=rtpmap:0 PCMU/8000\r\n");
+    expect(out.split("a=fmtp:").length).toBe(2);
+  });
+
+  test("adds the parameters when Opus has none, to every Opus payload", () => {
+    const out = richOpus(sdp("a=rtpmap:111 OPUS/48000/2", "a=rtpmap:63 opus/48000/2", "a=fmtp:63 useinbandfec=0"));
+    expect(out).toContain("a=rtpmap:111 OPUS/48000/2\r\na=fmtp:111 maxaveragebitrate=96000;");
+    expect(out).toContain("a=fmtp:63 useinbandfec=1;maxaveragebitrate=96000;");
+    expect(out.split("a=fmtp:").length).toBe(3);
+  });
+
+  test("leaves a description without Opus alone", () => {
+    const s = sdp("a=rtpmap:0 PCMU/8000");
+    expect(richOpus(s)).toBe(s);
+  });
 });
