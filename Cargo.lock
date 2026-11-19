@@ -6445,6 +6445,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "block2",
+ "cc",
  "objc2",
  "serde",
  "serde_json",

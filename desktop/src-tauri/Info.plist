@@ -6,6 +6,8 @@
   <string>WatchSync shows your camera to the friends you're watching with, when you turn it on.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>WatchSync lets the friends you're watching with hear you, when you turn your mic on.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>WatchSync lets friends hear your Mac's sound when you share your screen with sound on. The movie and the call aren't included.</string>
   <!-- The app sits behind the fullscreen movie: App Nap would slow its
        timers and make friends' Macs think it dropped out of the room. -->
   <key>NSAppSleepDisabled</key>

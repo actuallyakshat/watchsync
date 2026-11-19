@@ -46,9 +46,9 @@ test("two people end up sending each other audio and video", async () => {
 
   const [pa, pb] = FakePC.all;
   // Only the lower id created transceivers; the other adopted them.
-  expect(pa.transceivers.map((t) => t.kind)).toEqual(["audio", "video", "video"]);
-  // The screen's transceiver is there, but nothing is sent on it.
-  expect(pb.transceivers.map((t) => t.direction)).toEqual(["sendrecv", "sendrecv", "recvonly"]);
+  expect(pa.transceivers.map((t) => t.kind)).toEqual(["audio", "video", "video", "audio"]);
+  // A share's screen and sound have transceivers, but nothing is sent on them.
+  expect(pb.transceivers.map((t) => t.direction)).toEqual(["sendrecv", "sendrecv", "recvonly", "recvonly"]);
   expect(pa.transceivers[0].sender.track).toBe(mic);
   expect(pa.signalingState).toBe("stable");
 
@@ -292,8 +292,8 @@ test("sharing a screen sends it alongside the camera, and only while sharing", a
   await r.deliver();
   // Nobody shares: the screen's m-line carries nothing either way. (Apps
   // older than screen sharing would take a second video for the camera.)
-  expect(pa.remoteSends).toEqual([true, true, false]);
-  expect(pb.remoteSends).toEqual([true, true, false]);
+  expect(pa.remoteSends).toEqual([true, true, false, false]);
+  expect(pb.remoteSends).toEqual([true, true, false, false]);
 
   // B (the answering side) shares: that renegotiates, from B.
   const screen = new FakeTrack("video");
@@ -303,7 +303,7 @@ test("sharing a screen sends it alongside the camera, and only while sharing", a
   expect(pb.transceivers[2].sender.track).toBe(screen);
   expect(pb.transceivers[1].sender.track).toBe(cam);
   expect(pb.transceivers[2].sender.params.encodings[0].maxBitrate).toBe(SCREEN_BITRATE);
-  expect(pa.remoteSends).toEqual([true, true, true]);
+  expect(pa.remoteSends).toEqual([true, true, true, false]);
   expect([pa.signalingState, pb.signalingState]).toEqual(["stable", "stable"]);
 
   // A sees B's camera and screen apart.
@@ -316,12 +316,12 @@ test("sharing a screen sends it alongside the camera, and only while sharing", a
   await r.deliver();
   expect(pb.transceivers[2].direction).toBe("recvonly");
   expect(pb.transceivers[2].sender.track).toBe(null);
-  expect(pa.remoteSends).toEqual([true, true, false]);
+  expect(pa.remoteSends).toEqual([true, true, false, false]);
 
   // The offering side can share too.
   r.meshes.get("a")!.setTrack("screen", asTrack(new FakeTrack("video")));
   await r.deliver();
-  expect(pb.remoteSends).toEqual([true, true, true]);
+  expect(pb.remoteSends).toEqual([true, true, true, false]);
   expect(b.remotes()[0].screen.getTracks()).toEqual([pb.transceivers[2].receiver.track]);
 });
 
@@ -331,8 +331,8 @@ test("someone joining while you share gets your screen straight away", async () 
   r.meshes.get("a")!.setTrack("screen", asTrack(new FakeTrack("video")));
   await connect(r);
   const [pa, pb] = FakePC.all;
-  expect(pa.transceivers.map((t) => t.direction)).toEqual(["sendrecv", "sendrecv", "sendrecv"]);
-  expect(pb.transceivers.map((t) => t.direction)).toEqual(["sendrecv", "sendrecv", "sendrecv"]);
+  expect(pa.transceivers.map((t) => t.direction)).toEqual(["sendrecv", "sendrecv", "sendrecv", "recvonly"]);
+  expect(pb.transceivers.map((t) => t.direction)).toEqual(["sendrecv", "sendrecv", "sendrecv", "recvonly"]);
   expect([pa.remoteSends[2], pb.remoteSends[2]]).toEqual([true, true]);
 });
 
@@ -353,4 +353,31 @@ test("sharing with an older app that offered no screen adds one", async () => {
   // B offers the new m-line itself.
   expect(pb.signalingState).toBe("have-local-offer");
   expect(pb.localDescription?.sdp).toBe("audio:sendrecv,video:sendrecv,video:sendrecv");
+});
+
+test("a share's sound goes on its own transceiver, apart from the voice", async () => {
+  const r = room(["a", "b"]);
+  await connect(r);
+  const [pa, pb] = FakePC.all;
+  const b = r.meshes.get("b")!;
+  const mic = new FakeTrack("audio");
+  b.setTrack("audio", asTrack(mic));
+  const sound = new FakeTrack("audio");
+  b.setTrack("screen", asTrack(new FakeTrack("video")));
+  b.setTrack("screenAudio", asTrack(sound));
+  await r.deliver();
+  expect(pb.transceivers[3].direction).toBe("sendrecv");
+  expect(pb.transceivers[3].sender.track).toBe(sound);
+  expect(pb.transceivers[0].sender.track).toBe(mic);
+  expect(pa.remoteSends).toEqual([true, true, true, true]);
+
+  // A hears B's voice and B's shared sound apart (each with its own volume).
+  const ofB = r.meshes.get("a")!.remotes()[0];
+  expect(ofB.stream.getAudioTracks()).toEqual([pa.transceivers[0].receiver.track]);
+  expect(ofB.screen.getAudioTracks()).toEqual([pa.transceivers[3].receiver.track]);
+
+  // Turning the sound off keeps the screen going.
+  b.setTrack("screenAudio", null);
+  await r.deliver();
+  expect(pa.remoteSends).toEqual([true, true, true, false]);
 });

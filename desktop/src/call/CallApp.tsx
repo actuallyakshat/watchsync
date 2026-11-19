@@ -16,6 +16,7 @@ import {
   GridIcon,
   HeadphonesIcon,
   MicIcon,
+  MutedIcon,
   PinIcon,
   SelfIcon,
   ShareScreenIcon,
@@ -23,6 +24,10 @@ import {
   StopShareIcon,
   VolumeIcon,
 } from "../components/Icons";
+import { filmstripSide, gridFit, GAP, pickStage, tileKey, type Box, type TileKind, type TileRef } from "./layout";
+import { shareSoundAvailable, startShareSound, type SharedSound } from "./shareSound";
+import { initial, Tile, type Person } from "./tiles";
+import { TooltipLayer, useTooltip } from "./tooltips";
 import { ICE_SERVERS, Mesh, type Kind, type Path, type Remote, type SignalData, type Size } from "./mesh";
 import { loadPrefs, savePrefs, type CallPrefs } from "./prefs";
 import { micConstraints, processMic, type MicChain, type MicSettings } from "./micChain";
@@ -53,18 +58,8 @@ const CAN_PICK_SPEAKER = typeof HTMLMediaElement !== "undefined" && "setSinkId" 
 type Mode = "pill" | "tiles";
 type ShareKind = "screen" | "window";
 
-interface Person {
-  id: string;
-  name: string;
-  cam: boolean;
-  mic: boolean;
-  /** Sharing their screen. */
-  screen: boolean;
-  remote: Remote | null;
-}
-
-/** A tile is a person's camera, or the screen they share. */
-const screenTile = (id: string) => `${id}:screen`;
+/** A tile's key: the person's id ("self" for you), ":screen" for a screen. */
+const keyOf = (p: Person, kind: TileKind) => tileKey(p.id || "self", kind);
 
 export function CallApp() {
   const [snap, setSnap] = useState<Snapshot>(EMPTY);
@@ -82,7 +77,14 @@ export function CallApp() {
   /** Your shared screen (shown to you as a preview), and the share menu. */
   const [shareStream, setShareStream] = useState<MediaStream | null>(null);
   const [shareMenu, setShareMenu] = useState(false);
+  const [shareKind, setShareKind] = useState<ShareKind>("screen");
   const sharing = shareStream !== null;
+  /** Your Mac's sound, going out with the share. */
+  const sharedSound = useRef<SharedSound | null>(null);
+  const [soundOn, setSoundOn] = useState(false);
+  const [canShareSound, setCanShareSound] = useState(false);
+  const canShareSoundRef = useRef(false);
+  canShareSoundRef.current = canShareSound;
 
   const mesh = useRef<Mesh | null>(null);
   if (!mesh.current) {
@@ -130,8 +132,10 @@ export function CallApp() {
       rememberPosition(),
     ];
     void restorePosition(pillWidth(0));
+    void shareSoundAvailable().then((ok) => setCanShareSound(ok === true));
     return () => {
       m.close();
+      sharedSound.current?.stop();
       for (const k of ["audio", "video", "screen"] as Kind[]) m.track(k)?.stop();
       for (const u of un) void u.then((f) => f());
     };
@@ -232,9 +236,34 @@ export function CallApp() {
     [setDevice, setPrefs],
   );
 
+  /** Stop sending your Mac's sound (the screen goes on). */
+  const stopSound = useCallback(() => {
+    const s = sharedSound.current;
+    if (!s) return;
+    sharedSound.current = null;
+    s.stop();
+    mesh.current!.setTrack("screenAudio", null);
+    setSoundOn(false);
+  }, []);
+
+  /** Send your Mac's sound with the share (not the movie or the call). */
+  const startSound = useCallback(async () => {
+    if (sharedSound.current) return;
+    const s = await startShareSound();
+    if (!s) {
+      setError("Couldn't share your Mac's sound. Your screen is still shared.");
+      return;
+    }
+    if (!mesh.current!.track("screen") || sharedSound.current) return s.stop(); // stopped meanwhile
+    sharedSound.current = s;
+    mesh.current!.setTrack("screenAudio", s.track);
+    setSoundOn(true);
+  }, []);
+
   /** Stop sharing your screen (also when macOS's menu bar stops it). */
   const stopShare = useCallback((announce: boolean) => {
     const m = mesh.current!;
+    stopSound();
     const t = m.track("screen");
     if (!t) return;
     t.onended = null;
@@ -242,7 +271,7 @@ export function CallApp() {
     m.setTrack("screen", null);
     setShareStream(null);
     if (announce) void send({ type: "notify", text: "Stopped sharing your screen" });
-  }, []);
+  }, [stopSound]);
 
   /** Share your entire screen or a window: macOS's picker chooses which. */
   const startShare = useCallback(
@@ -288,11 +317,21 @@ export function CallApp() {
       };
       m.setTrack("screen", shared);
       setShareStream(new MediaStream([shared]));
+      setShareKind(kind);
       setError(null);
       void send({ type: "notify", text: kind === "window" ? "Sharing a window" : "Sharing your screen" });
+      if (prefsRef.current.shareSound && canShareSoundRef.current) void startSound();
     },
-    [stopShare],
+    [stopShare, startSound],
   );
+
+  /** Turn the share's sound on or off (and remember it for next time). */
+  const toggleSound = useCallback(() => {
+    const on = !sharedSound.current;
+    setPrefs({ shareSound: on });
+    if (on) void startSound();
+    else stopSound();
+  }, [setPrefs, startSound, stopSound]);
 
   /** The share button: stop if sharing, otherwise ask what to share. */
   const onShareButton = useCallback(() => {
@@ -478,6 +517,11 @@ export function CallApp() {
   // them away from the movie.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setShareMenu(false);
+        setSettingsOpen(false);
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
       const player = snap.player_open;
       if (e.code === "Space" && player) {
@@ -521,17 +565,41 @@ export function CallApp() {
   for (const [id, n] of names) lastNames.current.set(id, n);
   const volumeOf = (name: string | undefined) => (name !== undefined ? (prefs.volumes[name] ?? 1) : 1);
   const setVolume = (name: string, v: number) => setPrefs({ volumes: { ...prefs.volumes, [name]: v } });
+  const shareVolumeOf = (name: string | undefined) => (name !== undefined ? (prefs.shareVolumes[name] ?? 1) : 1);
+  const setShareVolume = (name: string, v: number) => setPrefs({ shareVolumes: { ...prefs.shareVolumes, [name]: v } });
   const sound = remotes.map((r) => (
-    <RemoteAudio
-      key={r.id}
-      remote={r}
-      audios={audios.current}
-      onBlocked={onBlocked}
-      volume={prefs.voices * volumeOf(lastNames.current.get(r.id))}
-      sinkId={prefs.speakerId}
-    />
+    <span key={r.id} hidden>
+      <RemoteAudio
+        stream={r.stream}
+        version={r.version}
+        audios={audios.current}
+        onBlocked={onBlocked}
+        volume={prefs.voices * volumeOf(lastNames.current.get(r.id))}
+        sinkId={prefs.speakerId}
+      />
+      {/* Their shared screen's sound (silent unless they share it). */}
+      <RemoteAudio
+        stream={r.screen}
+        version={r.version}
+        audios={audios.current}
+        onBlocked={onBlocked}
+        volume={shareVolumeOf(lastNames.current.get(r.id))}
+        sinkId={prefs.speakerId}
+      />
+    </span>
   ));
   const speakersWarning = onSpeakers && !speakersDismissed;
+  const tip = useTooltip();
+  const [box, setBox] = useState<Box | null>(null);
+  const area = useRef<ResizeObserver | null>(null);
+  const measure = useCallback((el: HTMLDivElement | null) => {
+    area.current?.disconnect();
+    area.current = null;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([e]) => setBox({ w: e.contentRect.width, h: e.contentRect.height }));
+    ro.observe(el);
+    area.current = ro;
+  }, []);
 
   if (!inRoom) return <div className="call" />;
 
@@ -540,34 +608,45 @@ export function CallApp() {
       <div className="call pill" data-tauri-drag-region>
         {sound}
         <div className="pill-people" data-tauri-drag-region>
-          {people.length === 0 && (
-            <span className="pill-alone" data-tauri-drag-region>
-              Just you
+          {tip && !tip.el.closest(".pill-people") ? (
+            // No room above the strip for a button's tooltip: it goes here.
+            // (Not an avatar's: that would swap the avatar from under you.)
+            <span className="pill-hint" role="tooltip">
+              {tip.text}
             </span>
+          ) : (
+            <>
+              {people.length === 0 && (
+                <span className="pill-alone" data-tauri-drag-region>
+                  Just you
+                </span>
+              )}
+              {people.slice(0, 4).map((p) => (
+                <span
+                  key={p.id}
+                  className={`avatar small ${talking(p.id) ? "talking" : ""} ${p.cam || p.screen ? "has-cam" : ""}`}
+                  data-tip={p.screen ? `${p.name} is sharing their screen` : p.cam ? `${p.name}, camera on` : p.name}
+                  aria-label={p.name}
+                  data-tauri-drag-region
+                >
+                  {initial(p.name)}
+                </span>
+              ))}
+            </>
           )}
-          {people.slice(0, 4).map((p) => (
-            <span
-              key={p.id}
-              className={`avatar small ${talking(p.id) ? "talking" : ""} ${p.cam || p.screen ? "has-cam" : ""}`}
-              title={p.screen ? `${p.name} (sharing their screen)` : p.cam ? `${p.name} (camera on)` : p.name}
-              data-tauri-drag-region
-            >
-              {initial(p.name)}
-            </span>
-          ))}
         </div>
         {speakersWarning && (
           <button
             className="call-btn warn"
             onClick={() => setMode("tiles")}
             aria-label="You're on speakers"
-            title="You're on speakers: friends hear the movie through your mic. Use headphones."
+            data-tip="On speakers, friends hear the movie twice. Use headphones."
           >
             <HeadphonesIcon />
           </button>
         )}
         {blocked ? (
-          <button className="call-btn wide" onClick={hearCall}>
+          <button className="call-btn wide" onClick={hearCall} data-tip="macOS held the call's sound back">
             Click to hear
           </button>
         ) : (
@@ -580,7 +659,7 @@ export function CallApp() {
           className={`call-btn ${remoteCams > 0 || sharers.length > 0 ? "on" : ""}`}
           onClick={() => setMode("tiles")}
           aria-label="Expand the call"
-          title={sharers.length > 0 ? "Expand to see the shared screen" : remoteCams > 0 ? "Expand to see video" : "Expand"}
+          data-tip={sharers.length > 0 ? "Expand to see the shared screen" : remoteCams > 0 ? "Expand to see video" : "Expand"}
         >
           <ExpandIcon />
         </button>
@@ -588,95 +667,149 @@ export function CallApp() {
     );
   }
 
+  // ------------------------------------------------------------- tiles
   const self: Person = { id: "", name: snap.name || "You", cam, mic, screen: sharing, remote: null };
-  // Friends' shared screens come first: that's what they want you to see.
-  const screens = people.filter((p) => p.screen);
-  const pinnedScreen = pinned?.endsWith(":screen") ? (screens.find((p) => screenTile(p.id) === pinned) ?? null) : null;
-  const shownScreen = pinnedScreen ?? (pinned && people.some((p) => p.id === pinned) ? null : (screens[screens.length - 1] ?? null));
-  const shown = (pinned && people.find((p) => p.id === pinned)) || people.find((p) => p.id === speaker) || people[0];
-  const pin = (id: string) => (setPinned(id), setPrefs({ layout: "speaker" }));
-  const screenTiles = screens.map((p) => (
-    <ScreenTile key={screenTile(p.id)} person={p} stream={p.remote?.screen ?? null} version={p.remote?.version ?? 0} onClick={() => pin(screenTile(p.id))} />
-  ));
-  const tileCount = people.length + 1 + screens.length + (sharing ? 1 : 0);
+  interface Shown {
+    ref: TileRef;
+    person: Person;
+  }
+  const tile = (person: Person, kind: TileKind): Shown => ({ ref: { key: keyOf(person, kind), kind, self: person.id === "" }, person });
+  // Screens first: that's what people share them for.
+  const all: Shown[] = [
+    ...people.filter((p) => p.screen).map((p) => tile(p, "screen")),
+    ...people.map((p) => tile(p, "cam")),
+    ...(sharing ? [tile(self, "screen")] : []),
+    tile(self, "cam"),
+  ];
+  const pin = (key: string) => {
+    setPinned(key);
+    setPrefs({ layout: "speaker" });
+  };
+  const togglePin = (key: string) => (pinned === key ? setPinned(null) : pin(key));
+
+  const render = (t: Shown, where: "stage" | "strip" | "grid", style?: React.CSSProperties) => {
+    const { person: p, ref } = t;
+    const screen = ref.kind === "screen";
+    const mine = ref.self;
+    return (
+      <Tile
+        key={ref.key}
+        person={p}
+        kind={ref.kind}
+        stream={screen ? (mine ? shareStream : (p.remote?.screen ?? null)) : mine ? selfStream : (p.remote?.stream ?? null)}
+        version={p.remote?.version ?? 0}
+        talking={!screen && (mine ? mic && talking("") : talking(p.id))}
+        mirrored={mine && !screen}
+        relayed={!mine && !screen && paths.get(p.id) === "relay"}
+        pinned={pinned === ref.key}
+        onPin={() => togglePin(ref.key)}
+        onPick={where === "stage" ? undefined : () => pin(ref.key)}
+        volume={mine ? undefined : screen ? shareVolumeOf(p.name) : volumeOf(p.name)}
+        onVolume={mine ? undefined : screen ? (v) => setShareVolume(p.name, v) : (v) => setVolume(p.name, v)}
+        onSize={!mine && !screen ? onSize : undefined}
+        style={style}
+      />
+    );
+  };
+
+  const stageKey = prefs.layout === "speaker" ? pickStage(all.map((t) => t.ref), pinned, speaker) : null;
+  const stage = stageKey !== null ? all.find((t) => t.ref.key === stageKey) : undefined;
+  let body: React.ReactNode;
+  if (stage) {
+    const hideSelfCam = (t: Shown) => t.ref.self && t.ref.kind === "cam" && prefs.hideSelf;
+    const others = all.filter((t) => t !== stage && !hideSelfCam(t));
+    const side = filmstripSide(box);
+    // No room for a filmstrip: one small tile in the corner, the most
+    // useful one. Watching a screen: the face of whoever's talking (or the
+    // one sharing). Watching a face: the shared screen. Else yourself.
+    const camOn = (t: Shown) => t.ref.kind === "cam" && !t.ref.self && t.person.cam;
+    const corner = side
+      ? undefined
+      : stage.ref.kind === "screen"
+        ? (others.find((t) => camOn(t) && t.person.id === speaker) ??
+          others.find((t) => camOn(t) && keyOf(t.person, "screen") === stage.ref.key) ??
+          others.find(camOn) ??
+          others.find((t) => t.ref.self && t.ref.kind === "cam" && cam))
+        : (others.find((t) => t.ref.kind === "screen" && !t.ref.self) ?? others.find((t) => t.ref.self && t.ref.kind === "cam" && cam));
+    body = (
+      <div className={`spotlight ${side ? `strip-${side}` : ""}`} data-tauri-drag-region>
+        <div className="stage" data-tauri-drag-region>
+          {render(stage, "stage")}
+        </div>
+        {side && others.length > 0 && (
+          <div className="filmstrip" data-tauri-drag-region>
+            {others.map((t) => render(t, "strip"))}
+          </div>
+        )}
+        {corner && <div className="corner">{render(corner, "strip")}</div>}
+      </div>
+    );
+  } else {
+    const fit = gridFit(all.length, box);
+    const cols = fit?.cols ?? Math.ceil(Math.sqrt(all.length));
+    const rows = Math.ceil(all.length / cols);
+    const size: React.CSSProperties = fit
+      ? { width: fit.w, height: fit.h }
+      : { width: `calc((100% - ${GAP * (cols - 1)}px) / ${cols})`, height: `calc((100% - ${GAP * (rows - 1)}px) / ${rows})` };
+    body = (
+      <div className="grid" data-tauri-drag-region>
+        {all.map((t) => render(t, "grid", size))}
+        {people.length === 0 && (
+          <p className="call-note waiting" data-tauri-drag-region>
+            Waiting for friends to join
+          </p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="call tiles" data-tauri-drag-region>
       {sound}
-      {prefs.layout === "grid" || (!shown && !shownScreen) ? (
-        <div className="grid" style={{ ["--cols" as string]: Math.ceil(Math.sqrt(tileCount)) }} data-tauri-drag-region>
-          {screenTiles}
-          {people.map((p) => (
-            <Tile
-              key={p.id}
-              person={p}
-              talking={talking(p.id)}
-              onSize={onSize}
-              relayed={paths.get(p.id) === "relay"}
-              volume={volumeOf(p.name)}
-              onVolume={(v) => setVolume(p.name, v)}
-              onClick={() => pin(p.id)}
-            />
-          ))}
-          <Tile person={self} stream={selfStream} talking={mic && talking("")} mirrored />
-          {sharing && <ScreenTile person={self} stream={shareStream} version={0} />}
-          {people.length === 0 && (
-            <p className="call-note" data-tauri-drag-region>
-              Waiting for friends to join
-            </p>
-          )}
-        </div>
-      ) : (
-        <div className="speaker" data-tauri-drag-region>
-          {shownScreen ? (
-            <ScreenTile
-              key={screenTile(shownScreen.id)}
-              person={shownScreen}
-              stream={shownScreen.remote?.screen ?? null}
-              version={shownScreen.remote?.version ?? 0}
-              talking={talking(shownScreen.id)}
-            />
-          ) : (
-            shown && (
-              <Tile
-                key={shown.id}
-                person={shown}
-                talking={talking(shown.id)}
-                onSize={onSize}
-                relayed={paths.get(shown.id) === "relay"}
-                volume={volumeOf(shown.name)}
-                onVolume={(v) => setVolume(shown.name, v)}
-              />
-            )
-          )}
-          {prefs.selfView && cam && (
-            <div className="self-corner">
-              <Tile person={self} stream={selfStream} talking={false} mirrored />
-            </div>
-          )}
-        </div>
-      )}
+      <div className="call-area" ref={measure} data-tauri-drag-region>
+        {body}
+      </div>
 
       {sharing && !error && !speakersWarning && (
-        <div className="call-sharing" role="status">
-          <ShareScreenIcon />
-          <span>You're sharing your screen</span>
-          <button className="call-sharing-stop" onClick={() => stopShare(true)}>
+        <div className="share-chip" role="status">
+          <span className="rec-dot" aria-hidden="true" />
+          <span className="share-chip-text">{shareKind === "window" ? "You're sharing a window" : "You're sharing your screen"}</span>
+          {canShareSound && (
+            <button
+              className={`chip-btn ${soundOn ? "on" : ""}`}
+              onClick={toggleSound}
+              aria-label={soundOn ? "Stop sharing sound" : "Share sound"}
+              aria-pressed={soundOn}
+              data-tip={soundOn ? "Friends hear your Mac's sound (not the movie or the call). Click to stop." : "Let friends hear your Mac's sound too"}
+            >
+              {soundOn ? <VolumeIcon /> : <MutedIcon />}
+            </button>
+          )}
+          <button className="chip-stop" onClick={() => stopShare(true)} data-tip="Friends stop seeing your screen">
             Stop sharing
           </button>
         </div>
       )}
       {shareMenu && !sharing && (
         <div className="share-menu" role="menu" aria-label="Share">
-          <p className="share-menu-title">Share</p>
+          <p className="share-menu-title">Share with everyone in the call</p>
           <button role="menuitem" className="share-option" onClick={() => void startShare("screen")}>
             <span>Your entire screen</span>
             <small>Everything on a display you choose</small>
           </button>
           <button role="menuitem" className="share-option" onClick={() => void startShare("window")}>
             <span>A window</span>
-            <small>One app window: nothing else shows</small>
+            <small>Just one window. Nothing else shows</small>
           </button>
+          {canShareSound && (
+            <label className="share-sound">
+              <input type="checkbox" checked={prefs.shareSound} onChange={(e) => setPrefs({ shareSound: e.target.checked })} />
+              <span>
+                Share sound from this Mac
+                <small>Not the movie or the call</small>
+              </span>
+            </label>
+          )}
           <button className="share-menu-cancel" onClick={() => setShareMenu(false)}>
             Cancel
           </button>
@@ -685,7 +818,7 @@ export function CallApp() {
       {error && (
         <div className="call-error" role="alert">
           <span>{error}</span>
-          <button className="call-btn" onClick={() => setError(null)} aria-label="Dismiss">
+          <button className="call-btn" onClick={() => setError(null)} aria-label="Dismiss" data-tip="Dismiss">
             ×
           </button>
         </div>
@@ -694,7 +827,7 @@ export function CallApp() {
         <div className="call-error warn" role="status">
           <HeadphonesIcon />
           <span>You're on speakers, so friends hear the movie through your mic. Use headphones.</span>
-          <button className="call-btn" onClick={() => setSpeakersDismissed(true)} aria-label="Dismiss">
+          <button className="call-btn" onClick={() => setSpeakersDismissed(true)} aria-label="Dismiss" data-tip="Dismiss">
             ×
           </button>
         </div>
@@ -724,11 +857,12 @@ export function CallApp() {
         </button>
       )}
 
-      <div className={`call-controls ${shareMenu ? "pinned-open" : ""}`}>
+      <div className={`call-controls ${shareMenu || settingsOpen ? "pinned-open" : ""}`}>
         <Buttons mic={mic} cam={cam} micTalking={mic && talking("")} onToggle={toggle} />
         <ShareButton sharing={sharing} open={shareMenu} onClick={onShareButton} />
+        <span className="call-controls-gap" aria-hidden="true" />
         {prefs.layout === "speaker" && pinned && (
-          <button className="call-btn on" onClick={() => setPinned(null)} aria-label="Unpin" title="Unpin: follow whoever's talking">
+          <button className="call-btn on" onClick={() => setPinned(null)} aria-label="Unpin" data-tip="Unpin: the big spot follows the call again">
             <PinIcon />
           </button>
         )}
@@ -736,17 +870,17 @@ export function CallApp() {
           className="call-btn"
           onClick={() => setPrefs({ layout: prefs.layout === "grid" ? "speaker" : "grid" })}
           aria-label={prefs.layout === "grid" ? "Speaker view" : "Grid view"}
-          title={prefs.layout === "grid" ? "Show whoever's talking" : "Show everyone"}
+          data-tip={prefs.layout === "grid" ? "Spotlight: one big, the rest small" : "Grid: everyone the same size"}
         >
           {prefs.layout === "grid" ? <SpeakerIcon /> : <GridIcon />}
         </button>
         {prefs.layout === "speaker" && (
           <button
-            className={`call-btn ${prefs.selfView ? "on" : ""}`}
-            onClick={() => setPrefs({ selfView: !prefs.selfView })}
+            className={`call-btn ${prefs.hideSelf ? "" : "on"}`}
+            onClick={() => setPrefs({ hideSelf: !prefs.hideSelf })}
             aria-label="Show yourself"
-            aria-pressed={prefs.selfView}
-            title="Show your own camera in the corner"
+            aria-pressed={!prefs.hideSelf}
+            data-tip={prefs.hideSelf ? "Show yourself" : "Hide yourself (friends still see you)"}
           >
             <SelfIcon />
           </button>
@@ -759,7 +893,7 @@ export function CallApp() {
           }}
           aria-label="Call settings"
           aria-pressed={settingsOpen}
-          title="Camera, mic and volume"
+          data-tip="Settings: camera, mic and sound"
         >
           <GearIcon />
         </button>
@@ -770,12 +904,13 @@ export function CallApp() {
             setMode("pill");
           }}
           aria-label="Shrink the call"
-          title="Shrink"
+          data-tip="Shrink to the strip"
         >
           <CollapseIcon />
         </button>
       </div>
       <div className="resize-grip" onMouseDown={startResize} aria-hidden="true" />
+      <TooltipLayer tip={tip} />
     </div>
   );
 }
@@ -798,7 +933,7 @@ function Buttons({
         onClick={() => onToggle("audio")}
         aria-label={mic ? "Mute your mic" : "Turn your mic on"}
         aria-pressed={mic}
-        title={mic ? "Mute (M)" : "Unmute (M)"}
+        data-tip={mic ? "Mute (M)" : "Unmute (M)"}
       >
         <MicIcon off={!mic} />
       </button>
@@ -807,7 +942,7 @@ function Buttons({
         onClick={() => onToggle("video")}
         aria-label={cam ? "Turn your camera off" : "Turn your camera on"}
         aria-pressed={cam}
-        title={cam ? "Camera off (V)" : "Camera on (V)"}
+        data-tip={cam ? "Turn camera off (V)" : "Turn camera on (V)"}
       >
         <CamIcon off={!cam} />
       </button>
@@ -823,150 +958,24 @@ function ShareButton({ sharing, open, onClick }: { sharing: boolean; open?: bool
       aria-label={sharing ? "Stop sharing your screen" : "Share your screen"}
       aria-pressed={sharing}
       aria-expanded={sharing ? undefined : !!open}
-      title={sharing ? "Stop sharing" : "Share your screen or a window"}
+      data-tip={sharing ? "Stop sharing" : "Share your screen or a window"}
     >
       {sharing ? <StopShareIcon /> : <ShareScreenIcon />}
     </button>
   );
 }
 
-/** Someone's shared screen (yours too, as a preview): shown whole, never
- * cropped or mirrored. */
-function ScreenTile({
-  person,
+/** Plays one person's voice, or their shared screen's sound. */
+function RemoteAudio({
   stream,
   version,
-  talking = false,
-  onClick,
-}: {
-  person: Person;
-  stream: MediaStream | null;
-  version: number;
-  talking?: boolean;
-  onClick?: () => void;
-}) {
-  const hasVideo = person.screen && !!stream && stream.getVideoTracks().length > 0;
-  const video = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    const v = video.current;
-    if (!v) return;
-    if (v.srcObject !== stream) v.srcObject = stream;
-    void v.play().catch(() => {});
-  }, [stream, version, hasVideo]);
-  const mine = person.id === "";
-  const label = mine ? "Your screen" : `${person.name}'s screen`;
-  return (
-    <div className={`tile screen ${talking ? "talking" : ""} ${onClick ? "pickable" : ""}`} onClick={onClick} data-tauri-drag-region={onClick ? undefined : true}>
-      {hasVideo ? (
-        <video ref={video} autoPlay playsInline muted aria-label={label} data-tauri-drag-region={onClick ? undefined : true} />
-      ) : (
-        <span className="call-note" data-tauri-drag-region={onClick ? undefined : true}>
-          {mine ? "Sharing…" : `Waiting for ${person.name}'s screen`}
-        </span>
-      )}
-      <span className="tile-name">
-        <ShareScreenIcon />
-        {label}
-      </span>
-    </div>
-  );
-}
-
-function Tile({
-  person,
-  stream,
-  talking,
-  mirrored,
-  onClick,
-  onSize,
-  volume,
-  onVolume,
-  relayed,
-}: {
-  person: Person;
-  /** Their media comes through the iroh relay. */
-  relayed?: boolean;
-  stream?: MediaStream | null;
-  talking: boolean;
-  mirrored?: boolean;
-  onClick?: () => void;
-  /** Their own volume (0–1), for friends' tiles. */
-  volume?: number;
-  onVolume?: (v: number) => void;
-  /** How big this person is shown, in device pixels (0×0 once gone). */
-  onSize?: (id: string, size: Size) => void;
-}) {
-  const box = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = box.current;
-    if (!onSize || !el || typeof ResizeObserver === "undefined") return;
-    const id = person.id;
-    const ro = new ResizeObserver(([e]) => {
-      const dpr = window.devicePixelRatio || 1;
-      onSize(id, { w: e.contentRect.width * dpr, h: e.contentRect.height * dpr });
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      onSize(id, { w: 0, h: 0 });
-    };
-  }, [onSize, person.id]);
-  const media = stream ?? person.remote?.stream ?? null;
-  const version = person.remote?.version ?? 0;
-  const hasVideo = person.cam && !!media && media.getVideoTracks().length > 0;
-  const video = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    const v = video.current;
-    if (!v) return;
-    if (v.srcObject !== media) v.srcObject = media;
-    void v.play().catch(() => {});
-  }, [media, version, hasVideo]);
-
-  return (
-    <div ref={box} className={`tile ${talking ? "talking" : ""} ${onClick ? "pickable" : ""}`} onClick={onClick} data-tauri-drag-region={onClick ? undefined : true}>
-      {hasVideo ? (
-        <video ref={video} className={mirrored ? "mirrored" : ""} autoPlay playsInline muted data-tauri-drag-region={onClick ? undefined : true} />
-      ) : (
-        <span className={`avatar ${talking ? "talking" : ""}`} data-tauri-drag-region={onClick ? undefined : true}>
-          {initial(person.name)}
-        </span>
-      )}
-      <span className="tile-name">
-        {person.name}
-        {!person.mic && <MicIcon off />}
-        {relayed && (
-          <span className="tile-path" title="No direct connection: relayed through iroh">
-            via iroh
-          </span>
-        )}
-      </span>
-      {onVolume && (
-        <label className="tile-volume" onClick={(e) => e.stopPropagation()} title={`${person.name}'s volume`}>
-          <VolumeIcon />
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={volume ?? 1}
-            onChange={(e) => onVolume(Number(e.target.value))}
-            aria-label={`${person.name}'s volume`}
-          />
-        </label>
-      )}
-    </div>
-  );
-}
-
-/** Plays one person's voice. */
-function RemoteAudio({
-  remote,
   audios,
   onBlocked,
   volume,
   sinkId,
 }: {
-  remote: Remote;
+  stream: MediaStream;
+  version: number;
   audios: Set<HTMLAudioElement>;
   onBlocked: () => void;
   volume: number;
@@ -984,17 +993,13 @@ function RemoteAudio({
     const a = el.current;
     if (!a) return;
     audios.add(a);
-    if (a.srcObject !== remote.stream) a.srcObject = remote.stream;
+    if (a.srcObject !== stream) a.srcObject = stream;
     a.play().catch((e: unknown) => {
       if (e instanceof DOMException && e.name === "NotAllowedError") onBlocked();
     });
     return () => void audios.delete(a);
-  }, [remote.stream, remote.version, audios, onBlocked]);
+  }, [stream, version, audios, onBlocked]);
   return <audio ref={el} autoPlay />;
-}
-
-function initial(name: string): string {
-  return [...name.trim()][0]?.toUpperCase() ?? "?";
 }
 
 interface Meter {
@@ -1209,7 +1214,7 @@ function MicInput({
                 value={-s.thresholdDb - 95}
                 onChange={(e) => set({ thresholdDb: -95 - Number(e.target.value) })}
                 aria-label="Mic sensitivity"
-                title="More sensitive picks up quieter speech, and more noise"
+                data-tip="More sensitive picks up quieter speech, and more noise"
               />
             </label>
           )}

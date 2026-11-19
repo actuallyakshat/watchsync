@@ -188,6 +188,14 @@ export const HeadphonesIcon = () => (
   </svg>
 );
 
+/** A speaker with a cross: no sound. */
+export const MutedIcon = () => (
+  <svg {...base}>
+    <path d="M2.5 6h2.25L8 3.25v9.5L4.75 10H2.5z" />
+    <path d="M10.5 6l3.5 4M14 6l-3.5 4" />
+  </svg>
+);
+
 /** A speaker with sound waves. */
 export const VolumeIcon = () => (
   <svg {...base}>

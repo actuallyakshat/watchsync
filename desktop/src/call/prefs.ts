@@ -6,14 +6,18 @@ import { DEFAULT_MIC, type MicSettings } from "./micChain";
 export interface CallPrefs {
   mic: boolean;
   cam: boolean;
-  /** Your own camera in the corner of the speaker view. */
-  selfView: boolean;
+  /** Leave your own camera out of the filmstrip (or corner). */
+  hideSelf: boolean;
   layout: "speaker" | "grid";
   /** Size of the expanded call window (logical pixels). */
   size: { width: number; height: number };
   /** Everyone's voices (0–1), and per person, by name. */
   voices: number;
   volumes: Record<string, number>;
+  /** How loud each friend's shared sound plays (0–1), by name. */
+  shareVolumes: Record<string, number>;
+  /** Share your Mac's sound along with your screen (off until you choose). */
+  shareSound: boolean;
   /** Chosen devices ("" = the system default). */
   micId: string;
   camId: string;
@@ -29,11 +33,13 @@ export const CALL_KEY = "watchsync.call";
 export const DEFAULT_PREFS: CallPrefs = {
   mic: false,
   cam: false,
-  selfView: false,
+  hideSelf: false,
   layout: "speaker",
   size: { width: 320, height: 200 },
   voices: 1,
   volumes: {},
+  shareVolumes: {},
+  shareSound: false,
   micId: "",
   camId: "",
   speakerId: "",
@@ -52,13 +58,13 @@ export function loadPrefs(): CallPrefs {
     return {
       mic: p.mic === true,
       cam: p.cam === true,
-      selfView: p.selfView === true,
+      hideSelf: p.hideSelf === true,
       layout: p.layout === "grid" ? "grid" : "speaker",
       size,
       voices: volume(p.voices),
-      volumes: Object.fromEntries(
-        Object.entries(p.volumes && typeof p.volumes === "object" ? p.volumes : {}).map(([k, v]) => [k, volume(v)]),
-      ),
+      volumes: volumes(p.volumes),
+      shareVolumes: volumes(p.shareVolumes),
+      shareSound: p.shareSound === true,
       micId: typeof p.micId === "string" ? p.micId : "",
       camId: typeof p.camId === "string" ? p.camId : "",
       speakerId: typeof p.speakerId === "string" ? p.speakerId : "",
@@ -89,5 +95,7 @@ function micSettings(m: unknown): MicSettings {
   };
 }
 
+const volumes = (o: unknown): Record<string, number> =>
+  Object.fromEntries(Object.entries(o && typeof o === "object" ? o : {}).map(([k, v]) => [k, volume(v)]));
 const volume = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? clamp(v, 0, 1) : 1);
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));

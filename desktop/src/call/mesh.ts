@@ -9,10 +9,10 @@
 // that arrive with the first offer. Turning the mic or camera on or off only
 // swaps the track on an existing transceiver, so it never renegotiates.
 //
-// A third transceiver (the second video one) carries a shared screen. It
-// stays receive-only until you share: apps older than screen sharing treat
-// any second video they're sent as the camera, so it's sent only while
-// someone is actually sharing. Starting or stopping a share renegotiates.
+// Two more carry a screen share: the second video one the screen, the second
+// audio one its sound. They stay receive-only until used: older apps take
+// any second video for the camera (or second audio for the voice), so they
+// send only while someone is sharing. Starting or stopping renegotiates.
 //
 // The call must outlive the room's own trouble: a guest's connection blinking
 // or the host handing over briefly shortens the member list, but the media
@@ -45,13 +45,16 @@ export const MAX_RETRY_MS = 120_000;
 /** Signals kept while we don't know our own id yet (the window is starting). */
 const EARLY_SIGNALS = 100;
 
-export type Kind = "audio" | "video" | "screen";
+export type Kind = "audio" | "video" | "screen" | "screenAudio";
+/** The share's tracks: sent only while in use. */
+const SHARE: Kind[] = ["screen", "screenAudio"];
+const mediaOf = (k: Kind): "audio" | "video" => (k === "audio" || k === "screenAudio" ? "audio" : "video");
 
 export interface Remote {
   id: string;
   /** Their audio and camera, as received (tracks may be silent or black). */
   stream: MediaStream;
-  /** Their shared screen (black or absent unless they're sharing). */
+  /** Their shared screen and its sound (black or silent unless sharing). */
   screen: MediaStream;
   state: RTCPeerConnectionState;
   /** Bumped whenever `stream`'s tracks change, so views can reattach. */
@@ -145,7 +148,7 @@ type Send = (to: string, data: SignalData) => void;
 
 export class Mesh {
   private links = new Map<string, Link>();
-  private tracks: Record<Kind, MediaStreamTrack | null> = { audio: null, video: null, screen: null };
+  private tracks: Record<Kind, MediaStreamTrack | null> = { audio: null, video: null, screen: null, screenAudio: null };
   private leaving = new Map<string, ReturnType<typeof setTimeout>>();
   private early: [string, SignalData][] = [];
   /** Signals are handled one at a time, in order: a candidate must not
@@ -309,7 +312,7 @@ class Link {
   private stream = new MediaStream();
   private screen = new MediaStream();
   private version = 0;
-  private tx: Record<Kind, RTCRtpTransceiver | null> = { audio: null, video: null, screen: null };
+  private tx: Record<Kind, RTCRtpTransceiver | null> = { audio: null, video: null, screen: null, screenAudio: null };
   /** The other side's first description has been applied (the answering
    * side has adopted the offer's transceivers). */
   private adopted = false;
@@ -339,10 +342,10 @@ class Link {
     this.pc.onicecandidate = ({ candidate }) => this.send_({ candidate: candidate?.toJSON() ?? null });
     this.pc.onnegotiationneeded = () => void this.offer();
     this.pc.ontrack = ({ track, transceiver }) => {
-      // The first video is the camera, any later one a shared screen (both
-      // sides see the transceivers in the same, m-line order).
-      const videos = this.pc.getTransceivers().filter((t) => t.receiver.track.kind === "video");
-      const into = track.kind === "video" && transceiver && videos.indexOf(transceiver) > 0 ? this.screen : this.stream;
+      // The first audio and video are the voice and camera, any later ones a
+      // screen share (both sides see transceivers in the same, m-line order).
+      const same = this.pc.getTransceivers().filter((t) => t.receiver.track.kind === track.kind);
+      const into = transceiver && same.indexOf(transceiver) > 0 ? this.screen : this.stream;
       for (const t of into.getTracks()) if (t.kind === track.kind && t !== track) into.removeTrack(t);
       if (!into.getTracks().includes(track)) into.addTrack(track);
       this.version++;
@@ -361,8 +364,10 @@ class Link {
         this.tx[kind] = t;
         void this.send(kind, this.local(kind));
       }
-      this.tx.screen = this.pc.addTransceiver("video", { direction: this.local("screen") ? "sendrecv" : "recvonly" });
-      void this.send("screen", this.local("screen"));
+      for (const kind of SHARE) {
+        this.tx[kind] = this.pc.addTransceiver(mediaOf(kind), { direction: this.local(kind) ? "sendrecv" : "recvonly" });
+        void this.send(kind, this.local(kind));
+      }
       preferHardwareVideo(this.tx.video);
       preferHardwareVideo(this.tx.screen);
       this.openChannel();
@@ -464,7 +469,7 @@ class Link {
 
   async send(kind: Kind, track: MediaStreamTrack | null) {
     if (this.closed) return;
-    if (kind === "screen") this.screenDirection(track !== null);
+    if (SHARE.includes(kind)) this.shareDirection(kind, track !== null);
     const t = this.tx[kind];
     if (!t) return; // adopted later, with the current track
     try {
@@ -476,15 +481,15 @@ class Link {
     }
   }
 
-  /** Send the screen only while sharing (see the top of the file). */
-  private screenDirection(sharing: boolean) {
-    let t = this.tx.screen;
+  /** Send the share only while sharing (see the top of the file). */
+  private shareDirection(kind: Kind, sharing: boolean) {
+    let t = this.tx[kind];
     if (!t) {
-      // Connected to an app that offered no screen transceiver (older, or
+      // Connected to an app that offered no transceiver for it (older, or
       // the offer hasn't arrived yet): add one when there's something to send.
       if (!sharing || !this.adopted) return;
-      t = this.tx.screen = this.pc.addTransceiver("video", { direction: "sendrecv" });
-      preferHardwareVideo(t);
+      t = this.tx[kind] = this.pc.addTransceiver(mediaOf(kind), { direction: "sendrecv" });
+      if (kind === "screen") preferHardwareVideo(t);
       return;
     }
     const want: RTCRtpTransceiverDirection = sharing ? "sendrecv" : "recvonly";
@@ -588,17 +593,20 @@ class Link {
     for (const t of this.pc.getTransceivers()) {
       const media = t.receiver.track.kind;
       if (media !== "audio" && media !== "video") continue;
-      const kind: Kind = media === "audio" ? "audio" : !this.tx.video || this.tx.video === t ? "video" : "screen";
-      if (this.tx[kind] || Object.values(this.tx).includes(t)) continue;
+      if (Object.values(this.tx).includes(t)) continue;
+      const kind: Kind = media === "audio" ? (this.tx.audio ? "screenAudio" : "audio") : this.tx.video ? "screen" : "video";
+      if (this.tx[kind]) continue;
       this.tx[kind] = t;
-      t.direction = kind === "screen" ? (this.local("screen") ? "sendrecv" : "recvonly") : "sendrecv";
-      if (kind !== "audio") preferHardwareVideo(t);
+      t.direction = SHARE.includes(kind) && !this.local(kind) ? "recvonly" : "sendrecv";
+      if (media === "video") preferHardwareVideo(t);
       void this.send(kind, this.local(kind));
     }
-    // Sharing with an app whose offer had no screen transceiver: add ours.
-    if (!this.tx.screen && this.local("screen")) {
-      this.adopted = true;
-      void this.send("screen", this.local("screen"));
+    // Sharing with an app whose offer had no transceiver for it: add ours.
+    for (const kind of SHARE) {
+      if (!this.tx[kind] && this.local(kind)) {
+        this.adopted = true;
+        void this.send(kind, this.local(kind));
+      }
     }
     // The offer carries the size channel's m-line by now.
     this.openChannel();

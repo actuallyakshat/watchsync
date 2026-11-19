@@ -7,7 +7,12 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   server: { port: 1421, strictPort: true },
-  build: { target: "safari16" },
+  build: {
+    target: "safari16",
+    // Audio worklets must be files: the CSP (script-src 'self') blocks a
+    // small one Vite would otherwise inline as a data: URL.
+    assetsInlineLimit: (file) => (file.includes(".worklet.") ? false : undefined),
+  },
   test: {
     environment: "jsdom",
     globals: true,
