@@ -3,7 +3,7 @@ import type { Person, Reaction, Snapshot } from "../api";
 import { formatDrift } from "../format";
 import type { UpdateState } from "../update";
 import { Chat } from "./Chat";
-import { ArrowUpIcon, CamIcon, CheckIcon, CopyIcon, GearIcon, Mark, MicIcon } from "./Icons";
+import { ArrowUpIcon, CamIcon, CheckIcon, CopyIcon, GearIcon, Mark, MicIcon, ShareScreenIcon } from "./Icons";
 
 interface Props {
   snap: Snapshot;
@@ -95,9 +95,13 @@ function PersonRow({ person: p }: { person: Person }) {
     <li className="person" title={title}>
       <span className={`person-dot ${dot}`} />
       <span className="person-name">{p.name}</span>
-      <span className="person-call" aria-label={`${p.name}: mic ${p.mic ? "on" : "off"}, camera ${p.cam ? "on" : "off"}`}>
+      <span
+        className="person-call"
+        aria-label={`${p.name}: mic ${p.mic ? "on" : "off"}, camera ${p.cam ? "on" : "off"}${p.screen ? ", sharing their screen" : ""}`}
+      >
         {p.mic && <MicIcon />}
         {p.cam && <CamIcon />}
+        {p.screen && <ShareScreenIcon />}
       </span>
       <span className={`person-meta ${meta.tone ?? ""} ${p.is_host || p.outdated ? "" : "mono"}`}>{meta.text}</span>
     </li>

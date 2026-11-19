@@ -4,6 +4,7 @@
 
 mod hotkeys;
 mod output;
+mod screen;
 
 use serde::Serialize;
 use tauri::{Emitter, Manager, RunEvent, State};
@@ -119,7 +120,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Bridge { cmd: cmd_tx })
         .manage(hotkeys::Hotkeys::default())
-        .invoke_handler(tauri::generate_handler![send, player_setup, install_player, install_croc, show_call, hotkeys::set_call_shortcuts, output::output_is_speakers])
+        .invoke_handler(tauri::generate_handler![send, player_setup, install_player, install_croc, show_call, hotkeys::set_call_shortcuts, output::output_is_speakers, screen::choose_share])
         .setup(move |app| {
             // Push every engine snapshot to the window.
             let handle = app.handle().clone();
@@ -144,6 +145,10 @@ pub fn run() {
                     let _ = handle.emit_to(CALL, "signal", &signal);
                 }
             });
+            // Sharing your screen asks which: the whole screen or a window.
+            if let Some(call) = app.get_webview_window(CALL) {
+                screen::install(&call);
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_focus();
             }

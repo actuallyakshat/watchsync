@@ -116,6 +116,22 @@ export function CamIcon({ off }: { off?: boolean }) {
   );
 }
 
+/** A display with an arrow coming out: share your screen. */
+export const ShareScreenIcon = () => (
+  <svg {...base}>
+    <rect x="1.75" y="2.5" width="12.5" height="8.5" rx="1.5" />
+    <path d="M5.5 13.75h5M8 11v2.75M8 9V5M6.25 6.5L8 4.75l1.75 1.75" />
+  </svg>
+);
+
+/** A display with a cross: stop sharing. */
+export const StopShareIcon = () => (
+  <svg {...base}>
+    <rect x="1.75" y="2.5" width="12.5" height="8.5" rx="1.5" />
+    <path d="M5.5 13.75h5M8 11v2.75M6.25 5l3.5 3.5M9.75 5l-3.5 3.5" />
+  </svg>
+);
+
 /** Four tiles. */
 export const GridIcon = () => (
   <svg {...base}>

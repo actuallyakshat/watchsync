@@ -1,6 +1,6 @@
 import { FakePC, FakeTrack, installFakeRtc } from "../test/fakeRtc";
 import { vi } from "vitest";
-import { GRACE_MS, MAX_VIDEO_BITRATE, MIN_VIDEO_BITRATE, Mesh, RETRY_MS, encodingFor, richOpus, roundSize, type SignalData } from "./mesh";
+import { GRACE_MS, MAX_VIDEO_BITRATE, MIN_VIDEO_BITRATE, Mesh, RETRY_MS, SCREEN_BITRATE, encodingFor, richOpus, roundSize, type SignalData } from "./mesh";
 
 beforeEach(() => {
   installFakeRtc();
@@ -46,8 +46,9 @@ test("two people end up sending each other audio and video", async () => {
 
   const [pa, pb] = FakePC.all;
   // Only the lower id created transceivers; the other adopted them.
-  expect(pa.transceivers.map((t) => t.kind)).toEqual(["audio", "video"]);
-  expect(pb.transceivers.map((t) => t.direction)).toEqual(["sendrecv", "sendrecv"]);
+  expect(pa.transceivers.map((t) => t.kind)).toEqual(["audio", "video", "video"]);
+  // The screen's transceiver is there, but nothing is sent on it.
+  expect(pb.transceivers.map((t) => t.direction)).toEqual(["sendrecv", "sendrecv", "recvonly"]);
   expect(pa.transceivers[0].sender.track).toBe(mic);
   expect(pa.signalingState).toBe("stable");
 
@@ -277,4 +278,79 @@ describe("richOpus", () => {
     const s = sdp("a=rtpmap:0 PCMU/8000");
     expect(richOpus(s)).toBe(s);
   });
+});
+
+const asTrack = (t: FakeTrack) => t as unknown as MediaStreamTrack;
+
+test("sharing a screen sends it alongside the camera, and only while sharing", async () => {
+  const r = room(["a", "b"]);
+  await connect(r);
+  const [pa, pb] = FakePC.all;
+  const b = r.meshes.get("b")!;
+  const cam = new FakeTrack("video");
+  b.setTrack("video", asTrack(cam));
+  await r.deliver();
+  // Nobody shares: the screen's m-line carries nothing either way. (Apps
+  // older than screen sharing would take a second video for the camera.)
+  expect(pa.remoteSends).toEqual([true, true, false]);
+  expect(pb.remoteSends).toEqual([true, true, false]);
+
+  // B (the answering side) shares: that renegotiates, from B.
+  const screen = new FakeTrack("video");
+  b.setTrack("screen", asTrack(screen));
+  await r.deliver();
+  expect(pb.transceivers[2].direction).toBe("sendrecv");
+  expect(pb.transceivers[2].sender.track).toBe(screen);
+  expect(pb.transceivers[1].sender.track).toBe(cam);
+  expect(pb.transceivers[2].sender.params.encodings[0].maxBitrate).toBe(SCREEN_BITRATE);
+  expect(pa.remoteSends).toEqual([true, true, true]);
+  expect([pa.signalingState, pb.signalingState]).toEqual(["stable", "stable"]);
+
+  // A sees B's camera and screen apart.
+  const ofB = r.meshes.get("a")!.remotes()[0];
+  expect(ofB.screen.getTracks()).toEqual([pa.transceivers[2].receiver.track]);
+  expect(ofB.stream.getVideoTracks()).toEqual([pa.transceivers[1].receiver.track]);
+
+  // Stopping goes back to receive-only.
+  b.setTrack("screen", null);
+  await r.deliver();
+  expect(pb.transceivers[2].direction).toBe("recvonly");
+  expect(pb.transceivers[2].sender.track).toBe(null);
+  expect(pa.remoteSends).toEqual([true, true, false]);
+
+  // The offering side can share too.
+  r.meshes.get("a")!.setTrack("screen", asTrack(new FakeTrack("video")));
+  await r.deliver();
+  expect(pb.remoteSends).toEqual([true, true, true]);
+  expect(b.remotes()[0].screen.getTracks()).toEqual([pb.transceivers[2].receiver.track]);
+});
+
+test("someone joining while you share gets your screen straight away", async () => {
+  const r = room(["a", "b"]);
+  r.meshes.get("b")!.setTrack("screen", asTrack(new FakeTrack("video")));
+  r.meshes.get("a")!.setTrack("screen", asTrack(new FakeTrack("video")));
+  await connect(r);
+  const [pa, pb] = FakePC.all;
+  expect(pa.transceivers.map((t) => t.direction)).toEqual(["sendrecv", "sendrecv", "sendrecv"]);
+  expect(pb.transceivers.map((t) => t.direction)).toEqual(["sendrecv", "sendrecv", "sendrecv"]);
+  expect([pa.remoteSends[2], pb.remoteSends[2]]).toEqual([true, true]);
+});
+
+test("sharing with an older app that offered no screen adds one", async () => {
+  // "a" runs an app from before screen sharing: its offer has two m-lines.
+  const r = room(["b"]);
+  const b = r.meshes.get("b")!;
+  b.sync(["a"]);
+  await b.onSignal("a", { description: { type: "offer", sdp: "audio:sendrecv,video:sendrecv" }, session: "old" });
+  const pb = FakePC.all[0];
+  expect(pb.transceivers.length).toBe(2);
+
+  const screen = new FakeTrack("video");
+  b.setTrack("screen", asTrack(screen));
+  await r.deliver();
+  expect(pb.transceivers.length).toBe(3);
+  expect(pb.transceivers[2].sender.track).toBe(screen);
+  // B offers the new m-line itself.
+  expect(pb.signalingState).toBe("have-local-offer");
+  expect(pb.localDescription?.sdp).toBe("audio:sendrecv,video:sendrecv,video:sendrecv");
 });

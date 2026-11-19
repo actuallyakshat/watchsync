@@ -87,6 +87,9 @@ pub struct PeerInfo {
     pub mic: bool,
     #[serde(default)]
     pub cam: bool,
+    /// Sharing their screen (or a window).
+    #[serde(default)]
+    pub screen: bool,
     /// The room's short invite code (sent for the host), so whoever takes
     /// over keeps the same invite working ("" = none, or an older app).
     #[serde(default)]
@@ -165,8 +168,13 @@ pub enum Msg {
         to: String,
         reason: String,
     },
-    /// guest → host: "my mic / camera is now on or off".
-    Call { mic: bool, cam: bool },
+    /// guest → host: "my mic / camera / screen share is now on or off".
+    Call {
+        mic: bool,
+        cam: bool,
+        #[serde(default)]
+        screen: bool,
+    },
     /// A WebRTC signalling message (offer, answer, ICE candidate) for the
     /// peer with endpoint id `to`. The host fills in who sent it (`from_id`)
     /// and passes it on; the engine never looks inside `data`.

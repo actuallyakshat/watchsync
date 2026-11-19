@@ -76,6 +76,8 @@ export interface Person {
   id: string;
   mic: boolean;
   cam: boolean;
+  /** Sharing their screen or a window (missing from older apps). */
+  screen?: boolean;
 }
 
 export interface Snapshot {
@@ -115,6 +117,7 @@ export interface Snapshot {
   my_id: string;
   mic: boolean;
   cam: boolean;
+  screen?: boolean;
   player_fullscreen: boolean;
   /** This Mac's fallback relay for the call (a TURN server on 127.0.0.1). */
   turn: { urls: string; username: string; credential: string } | null;
@@ -144,7 +147,7 @@ export type Command =
   | { type: "stop_sharing" }
   | { type: "get_file"; offer_id: string }
   | { type: "cancel_transfer"; id: number }
-  | { type: "set_call"; mic: boolean; cam: boolean }
+  | { type: "set_call"; mic: boolean; cam: boolean; screen: boolean }
   | { type: "signal"; to: string; data: unknown }
   | { type: "notify"; text: string }
   | { type: "toggle_fullscreen" }
@@ -172,6 +175,9 @@ export const onSnapshot = (f: (s: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>("snapshot", (e) => f(e.payload));
 export const onSignal = (f: (s: SignalIn) => void): Promise<UnlistenFn> =>
   listen<SignalIn>("signal", (e) => f(e.payload));
+/** What the next screen share opens: macOS's picker for the whole screen,
+ * or for one window. Call right before getDisplayMedia. */
+export const chooseShare = (kind: "screen" | "window") => invoke<void>("choose_share", { kind });
 /** "Show call" was pressed in the main window. */
 export const onCallExpand = (f: () => void): Promise<UnlistenFn> => listen("call-expand", () => f());
 
@@ -209,6 +215,7 @@ export const EMPTY: Snapshot = {
   my_id: "",
   mic: false,
   cam: false,
+  screen: false,
   player_fullscreen: false,
   turn: null,
 };

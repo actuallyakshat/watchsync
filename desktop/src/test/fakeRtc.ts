@@ -76,13 +76,28 @@ class FakeSender {
 class FakeTransceiver {
   sender = new FakeSender();
   receiver: { track: FakeTrack; getSynchronizationSources: () => { audioLevel: number }[] };
+  private dir: string;
   constructor(
     public kind: string,
-    public direction: string,
+    direction: string,
+    private changed: () => void = () => {},
   ) {
+    this.dir = direction;
     this.receiver = { track: new FakeTrack(kind), getSynchronizationSources: () => [] };
   }
+  get direction() {
+    return this.dir;
+  }
+  /** Like browsers: changing the direction needs a negotiation. */
+  set direction(d: string) {
+    if (d === this.dir) return;
+    this.dir = d;
+    this.changed();
+  }
 }
+
+/** Whether a direction (ours, as written in a description) sends media. */
+const sends = (direction: string) => direction === "sendrecv" || direction === "sendonly";
 
 type Desc = { type: "offer" | "answer"; sdp: string };
 
@@ -96,7 +111,7 @@ export class FakePC {
   closed = false;
   onicecandidate: ((e: { candidate: null }) => void) | null = null;
   onnegotiationneeded: (() => void) | null = null;
-  ontrack: ((e: { track: FakeTrack }) => void) | null = null;
+  ontrack: ((e: { track: FakeTrack; transceiver: FakeTransceiver }) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
   restarts = 0;
   channels: FakeChannel[] = [];
@@ -119,17 +134,32 @@ export class FakePC {
     return m;
   }
   addTransceiver(kind: string, init: { direction: string }) {
-    const t = new FakeTransceiver(kind, init.direction);
+    const t = new FakeTransceiver(kind, init.direction, () => this.needNegotiation());
     this.transceivers.push(t);
-    // Like browsers: several changes in a row need one negotiation.
-    if (!this.needPending) {
-      this.needPending = true;
-      queueMicrotask(() => {
-        this.needPending = false;
-        this.onnegotiationneeded?.();
-      });
-    }
+    this.needNegotiation();
     return t;
+  }
+  /** Tracks the other side sends us, as of their last description. */
+  remoteSends: boolean[] = [];
+  /** Our transceivers as of the last finished negotiation. */
+  private negotiated = "";
+  private describe() {
+    return this.transceivers.map((t) => `${t.kind}:${t.direction}`).join(",");
+  }
+  private needNegotiation() {
+    // Like browsers: several changes in a row need one negotiation, and only
+    // once the current one is done, and only if something changed since.
+    if (this.needPending) return;
+    this.needPending = true;
+    queueMicrotask(() => {
+      this.needPending = false;
+      if (this.closed || this.signalingState !== "stable" || this.describe() === this.negotiated) return;
+      this.onnegotiationneeded?.();
+    });
+  }
+  private settled(ours: string) {
+    this.negotiated = ours;
+    this.needNegotiation(); // anything changed meanwhile goes next
   }
   createDataChannel(_label: string, init: { id: number }) {
     const c = new FakeChannel(init.id);
@@ -153,24 +183,38 @@ export class FakePC {
   }
   async setLocalDescription() {
     const type = this.signalingState === "have-remote-offer" ? "answer" : "offer";
-    const desc: Desc = { type, sdp: this.transceivers.map((t) => t.kind).join(",") };
+    // "kind:direction" per transceiver, like m-lines.
+    const desc: Desc = { type, sdp: this.describe() };
     this.localDescription = { ...desc, toJSON: () => desc };
     this.signalingState = type === "offer" ? "have-local-offer" : "stable";
+    if (type === "answer") this.settled(desc.sdp);
   }
   async setRemoteDescription(d: Desc) {
     await Promise.resolve(); // takes a moment, like the real thing
     this.remoteSet = true;
-    const kinds = d.sdp.split(",").filter(Boolean);
+    const lines = d.sdp
+      .split(",")
+      .filter(Boolean)
+      .map((l) => {
+        const [kind, direction = "sendrecv"] = l.split(":");
+        return { kind, direction };
+      });
     if (d.type === "offer") {
-      kinds.forEach((kind, i) => {
-        if (!this.transceivers[i]) this.transceivers.push(new FakeTransceiver(kind, "recvonly"));
+      lines.forEach(({ kind }, i) => {
+        if (!this.transceivers[i]) this.transceivers.push(new FakeTransceiver(kind, "recvonly", () => this.needNegotiation()));
       });
       this.signalingState = "have-remote-offer";
     } else {
       this.signalingState = "stable";
       this.connectionState = "connected";
+      this.settled(this.localDescription?.sdp ?? "");
     }
-    for (const t of this.transceivers) this.ontrack?.({ track: t.receiver.track });
+    this.remoteSends = lines.map((l) => sends(l.direction));
+    // Like browsers: a track arrives for every m-line the other side sends on.
+    lines.forEach((l, i) => {
+      const t = this.transceivers[i];
+      if (t && sends(l.direction)) this.ontrack?.({ track: t.receiver.track, transceiver: t });
+    });
   }
   async addIceCandidate(c: unknown) {
     if (!this.remoteSet) throw new DOMException("no remote description", "InvalidStateError");

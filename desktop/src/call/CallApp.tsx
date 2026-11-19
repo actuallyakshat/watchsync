@@ -2,8 +2,12 @@
 // connection to the others. While you're in a room it is always open, either
 // as a small strip (who's here, mic, camera) or expanded to show video. It
 // stays on top of everything, including the movie in fullscreen.
+//
+// Sharing your screen works like Google Meet: pick your entire screen or one
+// window, and macOS's own picker opens to choose which. A friend's shared
+// screen takes the big spot (and brings the call up to show it).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EMPTY, onCallExpand, onCallShortcut, onSignal, onSnapshot, outputIsSpeakers, send, type Snapshot } from "../api";
+import { chooseShare, EMPTY, onCallExpand, onCallShortcut, onSignal, onSnapshot, outputIsSpeakers, send, type Snapshot } from "../api";
 import {
   CamIcon,
   CollapseIcon,
@@ -14,7 +18,9 @@ import {
   MicIcon,
   PinIcon,
   SelfIcon,
+  ShareScreenIcon,
   SpeakerIcon,
+  StopShareIcon,
   VolumeIcon,
 } from "../components/Icons";
 import { ICE_SERVERS, Mesh, type Kind, type Path, type Remote, type SignalData, type Size } from "./mesh";
@@ -29,20 +35,36 @@ const VIDEO: MediaTrackConstraints = {
   height: { ideal: 1080 },
   frameRate: { ideal: 30, max: 30 },
 };
+/** A shared screen: up to 1080p (sharp text) at up to 30 fps. */
+const SCREEN: MediaTrackConstraints = {
+  width: { max: 1920 },
+  height: { max: 1080 },
+  frameRate: { max: 30 },
+};
+/** Turned down faster than anyone could close a picker: macOS refused. */
+const REFUSED_MS = 600;
+/** The smallest the call window grows to when a friend starts sharing. */
+const SCREEN_VIEW = { width: 640, height: 400 };
 /** Asks the speakers question this often while your mic is on. */
 const OUTPUT_CHECK_MS = 5000;
 /** Choosing where call sound plays needs setSinkId, which WebKit may lack. */
 const CAN_PICK_SPEAKER = typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
 
 type Mode = "pill" | "tiles";
+type ShareKind = "screen" | "window";
 
 interface Person {
   id: string;
   name: string;
   cam: boolean;
   mic: boolean;
+  /** Sharing their screen. */
+  screen: boolean;
   remote: Remote | null;
 }
+
+/** A tile is a person's camera, or the screen they share. */
+const screenTile = (id: string) => `${id}:screen`;
 
 export function CallApp() {
   const [snap, setSnap] = useState<Snapshot>(EMPTY);
@@ -57,6 +79,10 @@ export function CallApp() {
   const [pinned, setPinned] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [blocked, setBlocked] = useState(false);
+  /** Your shared screen (shown to you as a preview), and the share menu. */
+  const [shareStream, setShareStream] = useState<MediaStream | null>(null);
+  const [shareMenu, setShareMenu] = useState(false);
+  const sharing = shareStream !== null;
 
   const mesh = useRef<Mesh | null>(null);
   if (!mesh.current) {
@@ -106,7 +132,7 @@ export function CallApp() {
     void restorePosition(pillWidth(0));
     return () => {
       m.close();
-      for (const k of ["audio", "video"] as Kind[]) m.track(k)?.stop();
+      for (const k of ["audio", "video", "screen"] as Kind[]) m.track(k)?.stop();
       for (const u of un) void u.then((f) => f());
     };
   }, []);
@@ -206,6 +232,76 @@ export function CallApp() {
     [setDevice, setPrefs],
   );
 
+  /** Stop sharing your screen (also when macOS's menu bar stops it). */
+  const stopShare = useCallback((announce: boolean) => {
+    const m = mesh.current!;
+    const t = m.track("screen");
+    if (!t) return;
+    t.onended = null;
+    t.stop();
+    m.setTrack("screen", null);
+    setShareStream(null);
+    if (announce) void send({ type: "notify", text: "Stopped sharing your screen" });
+  }, []);
+
+  /** Share your entire screen or a window: macOS's picker chooses which. */
+  const startShare = useCallback(
+    async (kind: ShareKind) => {
+      setShareMenu(false);
+      const m = mesh.current!;
+      let track: MediaStreamTrack | null = null;
+      const asked = performance.now();
+      try {
+        if (!navigator.mediaDevices?.getDisplayMedia) throw new DOMException("no getDisplayMedia", "NotSupportedError");
+        // Tells the app which macOS picker the request below should open.
+        await chooseShare(kind);
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: SCREEN, audio: false });
+        track = stream.getVideoTracks()[0] ?? null;
+      } catch (e) {
+        // Closing the picker is "not allowed" too: that's no error. But no
+        // picker closes that fast: then macOS didn't allow it at all.
+        const name = e instanceof DOMException ? e.name : "";
+        if (name === "NotAllowedError" && performance.now() - asked < REFUSED_MS) {
+          setError("macOS didn't let WatchSync share your screen. Allow it in System Settings → Privacy & Security → Screen & System Audio Recording.");
+          setMode("tiles");
+        } else if (name !== "NotAllowedError" && name !== "AbortError") {
+          setError(name === "NotSupportedError" ? "Screen sharing needs a newer macOS." : "Couldn't share your screen.");
+          setMode("tiles");
+        }
+        return;
+      }
+      if (!track) return;
+      if (!inRoomRef.current) {
+        track.stop(); // left the room while picking
+        return;
+      }
+      // Sharp text over smooth motion.
+      track.contentHint = "detail";
+      const old = m.track("screen");
+      if (old) {
+        old.onended = null;
+        old.stop();
+      }
+      const shared = track;
+      shared.onended = () => {
+        if (mesh.current!.track("screen") === shared) stopShare(true);
+      };
+      m.setTrack("screen", shared);
+      setShareStream(new MediaStream([shared]));
+      setError(null);
+      void send({ type: "notify", text: kind === "window" ? "Sharing a window" : "Sharing your screen" });
+    },
+    [stopShare],
+  );
+
+  /** The share button: stop if sharing, otherwise ask what to share. */
+  const onShareButton = useCallback(() => {
+    if (sharing) return stopShare(true);
+    setMode("tiles");
+    setSettingsOpen(false);
+    setShareMenu((open) => !open);
+  }, [sharing, stopShare]);
+
   const toggle = useCallback(
     async (kind: Kind) => {
       const on = !(kind === "audio" ? mic : cam);
@@ -252,6 +348,8 @@ export function CallApp() {
       m.close();
       void setDevice("audio", false, false);
       void setDevice("video", false, false);
+      stopShare(false);
+      setShareMenu(false);
       setMode("pill");
       shrunk.current = false;
       setPinned(null);
@@ -260,11 +358,11 @@ export function CallApp() {
       setSettingsOpen(false);
       setSpeakersDismissed(false);
     }
-  }, [inRoom, setDevice]);
+  }, [inRoom, setDevice, stopShare]);
 
   useEffect(() => {
-    if (inRoom) void send({ type: "set_call", mic, cam });
-  }, [inRoom, mic, cam]);
+    if (inRoom) void send({ type: "set_call", mic, cam, screen: sharing });
+  }, [inRoom, mic, cam, sharing]);
 
   // Keep a connection to everyone in the room. If they can't reach each
   // other directly, WebRTC relays through this Mac's relay, over iroh.
@@ -305,7 +403,7 @@ export function CallApp() {
     () =>
       snap.peers
         .filter((p) => p.id && p.id !== snap.my_id)
-        .map((p) => ({ id: p.id, name: p.name, cam: p.cam, mic: p.mic, remote: byId.get(p.id) ?? null })),
+        .map((p) => ({ id: p.id, name: p.name, cam: p.cam, mic: p.mic, screen: !!p.screen, remote: byId.get(p.id) ?? null })),
     [snap.peers, snap.my_id, byId],
   );
   const ids = people.map((p) => p.id).join(",");
@@ -350,14 +448,31 @@ export function CallApp() {
   // A friend's camera coming on brings their video up (unless you shrank
   // the call yourself); so does going fullscreen with a camera on.
   const remoteCams = people.filter((p) => p.cam).length;
-  const before = useRef({ fullscreen: false, cams: 0 });
+  // A friend starting to share always brings it up, big enough to read.
+  const sharers = people.filter((p) => p.screen).map((p) => p.id);
+  const sharerIds = sharers.join(",");
+  const before = useRef({ fullscreen: false, cams: 0, sharers: [] as string[] });
   useEffect(() => {
     const was = before.current;
     const fullscreenNow = snap.player_fullscreen && !was.fullscreen && remoteCams > 0;
     const camNow = remoteCams > 0 && was.cams === 0 && (!shrunk.current || snap.player_fullscreen);
-    if (fullscreenNow || camNow) setMode("tiles");
-    before.current = { fullscreen: snap.player_fullscreen, cams: remoteCams };
-  }, [snap.player_fullscreen, remoteCams]);
+    const now = sharerIds.split(",").filter(Boolean);
+    const newSharer = now.find((id) => !was.sharers.includes(id));
+    if (newSharer) {
+      setMode("tiles");
+      // Show the new share on the big spot, unless you pinned a screen.
+      setPinned((p) => (p?.endsWith(":screen") ? p : null));
+      const { width, height } = prefsRef.current.size;
+      if (width < SCREEN_VIEW.width || height < SCREEN_VIEW.height) {
+        const size = { width: Math.max(width, SCREEN_VIEW.width), height: Math.max(height, SCREEN_VIEW.height) };
+        // Saved, so expanding from the strip uses it; set now if already expanded.
+        prefsRef.current = { ...prefsRef.current, size };
+        setPrefs({ size });
+        void setWindowSize(size.width, size.height);
+      }
+    } else if (fullscreenNow || camNow) setMode("tiles");
+    before.current = { fullscreen: snap.player_fullscreen, cams: remoteCams, sharers: now };
+  }, [snap.player_fullscreen, remoteCams, sharerIds, setPrefs]);
 
   // The movie's keys work here too, so clicking this window doesn't take
   // them away from the movie.
@@ -433,8 +548,8 @@ export function CallApp() {
           {people.slice(0, 4).map((p) => (
             <span
               key={p.id}
-              className={`avatar small ${talking(p.id) ? "talking" : ""} ${p.cam ? "has-cam" : ""}`}
-              title={p.cam ? `${p.name} (camera on)` : p.name}
+              className={`avatar small ${talking(p.id) ? "talking" : ""} ${p.cam || p.screen ? "has-cam" : ""}`}
+              title={p.screen ? `${p.name} (sharing their screen)` : p.cam ? `${p.name} (camera on)` : p.name}
               data-tauri-drag-region
             >
               {initial(p.name)}
@@ -456,13 +571,16 @@ export function CallApp() {
             Click to hear
           </button>
         ) : (
-          <Buttons mic={mic} cam={cam} micTalking={mic && talking("")} onToggle={toggle} />
+          <>
+            <Buttons mic={mic} cam={cam} micTalking={mic && talking("")} onToggle={toggle} />
+            <ShareButton sharing={sharing} onClick={onShareButton} />
+          </>
         )}
         <button
-          className={`call-btn ${remoteCams > 0 ? "on" : ""}`}
+          className={`call-btn ${remoteCams > 0 || sharers.length > 0 ? "on" : ""}`}
           onClick={() => setMode("tiles")}
           aria-label="Expand the call"
-          title={remoteCams > 0 ? "Expand to see video" : "Expand"}
+          title={sharers.length > 0 ? "Expand to see the shared screen" : remoteCams > 0 ? "Expand to see video" : "Expand"}
         >
           <ExpandIcon />
         </button>
@@ -470,14 +588,24 @@ export function CallApp() {
     );
   }
 
+  const self: Person = { id: "", name: snap.name || "You", cam, mic, screen: sharing, remote: null };
+  // Friends' shared screens come first: that's what they want you to see.
+  const screens = people.filter((p) => p.screen);
+  const pinnedScreen = pinned?.endsWith(":screen") ? (screens.find((p) => screenTile(p.id) === pinned) ?? null) : null;
+  const shownScreen = pinnedScreen ?? (pinned && people.some((p) => p.id === pinned) ? null : (screens[screens.length - 1] ?? null));
   const shown = (pinned && people.find((p) => p.id === pinned)) || people.find((p) => p.id === speaker) || people[0];
-  const self: Person = { id: "", name: snap.name || "You", cam, mic, remote: null };
+  const pin = (id: string) => (setPinned(id), setPrefs({ layout: "speaker" }));
+  const screenTiles = screens.map((p) => (
+    <ScreenTile key={screenTile(p.id)} person={p} stream={p.remote?.screen ?? null} version={p.remote?.version ?? 0} onClick={() => pin(screenTile(p.id))} />
+  ));
+  const tileCount = people.length + 1 + screens.length + (sharing ? 1 : 0);
 
   return (
     <div className="call tiles" data-tauri-drag-region>
       {sound}
-      {prefs.layout === "grid" || !shown ? (
-        <div className="grid" style={{ ["--cols" as string]: Math.ceil(Math.sqrt(people.length + 1)) }} data-tauri-drag-region>
+      {prefs.layout === "grid" || (!shown && !shownScreen) ? (
+        <div className="grid" style={{ ["--cols" as string]: Math.ceil(Math.sqrt(tileCount)) }} data-tauri-drag-region>
+          {screenTiles}
           {people.map((p) => (
             <Tile
               key={p.id}
@@ -487,10 +615,11 @@ export function CallApp() {
               relayed={paths.get(p.id) === "relay"}
               volume={volumeOf(p.name)}
               onVolume={(v) => setVolume(p.name, v)}
-              onClick={() => (setPinned(p.id), setPrefs({ layout: "speaker" }))}
+              onClick={() => pin(p.id)}
             />
           ))}
           <Tile person={self} stream={selfStream} talking={mic && talking("")} mirrored />
+          {sharing && <ScreenTile person={self} stream={shareStream} version={0} />}
           {people.length === 0 && (
             <p className="call-note" data-tauri-drag-region>
               Waiting for friends to join
@@ -499,15 +628,27 @@ export function CallApp() {
         </div>
       ) : (
         <div className="speaker" data-tauri-drag-region>
-          <Tile
-            key={shown.id}
-            person={shown}
-            talking={talking(shown.id)}
-            onSize={onSize}
-            relayed={paths.get(shown.id) === "relay"}
-            volume={volumeOf(shown.name)}
-            onVolume={(v) => setVolume(shown.name, v)}
-          />
+          {shownScreen ? (
+            <ScreenTile
+              key={screenTile(shownScreen.id)}
+              person={shownScreen}
+              stream={shownScreen.remote?.screen ?? null}
+              version={shownScreen.remote?.version ?? 0}
+              talking={talking(shownScreen.id)}
+            />
+          ) : (
+            shown && (
+              <Tile
+                key={shown.id}
+                person={shown}
+                talking={talking(shown.id)}
+                onSize={onSize}
+                relayed={paths.get(shown.id) === "relay"}
+                volume={volumeOf(shown.name)}
+                onVolume={(v) => setVolume(shown.name, v)}
+              />
+            )
+          )}
           {prefs.selfView && cam && (
             <div className="self-corner">
               <Tile person={self} stream={selfStream} talking={false} mirrored />
@@ -516,6 +657,31 @@ export function CallApp() {
         </div>
       )}
 
+      {sharing && !error && !speakersWarning && (
+        <div className="call-sharing" role="status">
+          <ShareScreenIcon />
+          <span>You're sharing your screen</span>
+          <button className="call-sharing-stop" onClick={() => stopShare(true)}>
+            Stop sharing
+          </button>
+        </div>
+      )}
+      {shareMenu && !sharing && (
+        <div className="share-menu" role="menu" aria-label="Share">
+          <p className="share-menu-title">Share</p>
+          <button role="menuitem" className="share-option" onClick={() => void startShare("screen")}>
+            <span>Your entire screen</span>
+            <small>Everything on a display you choose</small>
+          </button>
+          <button role="menuitem" className="share-option" onClick={() => void startShare("window")}>
+            <span>A window</span>
+            <small>One app window: nothing else shows</small>
+          </button>
+          <button className="share-menu-cancel" onClick={() => setShareMenu(false)}>
+            Cancel
+          </button>
+        </div>
+      )}
       {error && (
         <div className="call-error" role="alert">
           <span>{error}</span>
@@ -558,8 +724,9 @@ export function CallApp() {
         </button>
       )}
 
-      <div className="call-controls">
+      <div className={`call-controls ${shareMenu ? "pinned-open" : ""}`}>
         <Buttons mic={mic} cam={cam} micTalking={mic && talking("")} onToggle={toggle} />
+        <ShareButton sharing={sharing} open={shareMenu} onClick={onShareButton} />
         {prefs.layout === "speaker" && pinned && (
           <button className="call-btn on" onClick={() => setPinned(null)} aria-label="Unpin" title="Unpin: follow whoever's talking">
             <PinIcon />
@@ -586,7 +753,10 @@ export function CallApp() {
         )}
         <button
           className={`call-btn ${settingsOpen ? "on" : ""}`}
-          onClick={() => setSettingsOpen((o) => !o)}
+          onClick={() => {
+            setShareMenu(false);
+            setSettingsOpen((o) => !o);
+          }}
           aria-label="Call settings"
           aria-pressed={settingsOpen}
           title="Camera, mic and volume"
@@ -642,6 +812,63 @@ function Buttons({
         <CamIcon off={!cam} />
       </button>
     </>
+  );
+}
+
+function ShareButton({ sharing, open, onClick }: { sharing: boolean; open?: boolean; onClick: () => void }) {
+  return (
+    <button
+      className={`call-btn ${sharing ? "sharing" : open ? "on" : ""}`}
+      onClick={onClick}
+      aria-label={sharing ? "Stop sharing your screen" : "Share your screen"}
+      aria-pressed={sharing}
+      aria-expanded={sharing ? undefined : !!open}
+      title={sharing ? "Stop sharing" : "Share your screen or a window"}
+    >
+      {sharing ? <StopShareIcon /> : <ShareScreenIcon />}
+    </button>
+  );
+}
+
+/** Someone's shared screen (yours too, as a preview): shown whole, never
+ * cropped or mirrored. */
+function ScreenTile({
+  person,
+  stream,
+  version,
+  talking = false,
+  onClick,
+}: {
+  person: Person;
+  stream: MediaStream | null;
+  version: number;
+  talking?: boolean;
+  onClick?: () => void;
+}) {
+  const hasVideo = person.screen && !!stream && stream.getVideoTracks().length > 0;
+  const video = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const v = video.current;
+    if (!v) return;
+    if (v.srcObject !== stream) v.srcObject = stream;
+    void v.play().catch(() => {});
+  }, [stream, version, hasVideo]);
+  const mine = person.id === "";
+  const label = mine ? "Your screen" : `${person.name}'s screen`;
+  return (
+    <div className={`tile screen ${talking ? "talking" : ""} ${onClick ? "pickable" : ""}`} onClick={onClick} data-tauri-drag-region={onClick ? undefined : true}>
+      {hasVideo ? (
+        <video ref={video} autoPlay playsInline muted aria-label={label} data-tauri-drag-region={onClick ? undefined : true} />
+      ) : (
+        <span className="call-note" data-tauri-drag-region={onClick ? undefined : true}>
+          {mine ? "Sharing…" : `Waiting for ${person.name}'s screen`}
+        </span>
+      )}
+      <span className="tile-name">
+        <ShareScreenIcon />
+        {label}
+      </span>
+    </div>
   );
 }
 

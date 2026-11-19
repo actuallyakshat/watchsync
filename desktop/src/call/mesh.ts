@@ -9,6 +9,11 @@
 // that arrive with the first offer. Turning the mic or camera on or off only
 // swaps the track on an existing transceiver, so it never renegotiates.
 //
+// A third transceiver (the second video one) carries a shared screen. It
+// stays receive-only until you share: apps older than screen sharing treat
+// any second video they're sent as the camera, so it's sent only while
+// someone is actually sharing. Starting or stopping a share renegotiates.
+//
 // The call must outlive the room's own trouble: a guest's connection blinking
 // or the host handing over briefly shortens the member list, but the media
 // path is direct and fine. So a person missing from the list is hung up on
@@ -40,12 +45,14 @@ export const MAX_RETRY_MS = 120_000;
 /** Signals kept while we don't know our own id yet (the window is starting). */
 const EARLY_SIGNALS = 100;
 
-export type Kind = "audio" | "video";
+export type Kind = "audio" | "video" | "screen";
 
 export interface Remote {
   id: string;
-  /** Their audio and video, as received (tracks may be silent or black). */
+  /** Their audio and camera, as received (tracks may be silent or black). */
   stream: MediaStream;
+  /** Their shared screen (black or absent unless they're sharing). */
+  screen: MediaStream;
   state: RTCPeerConnectionState;
   /** Bumped whenever `stream`'s tracks change, so views can reattach. */
   version: number;
@@ -60,6 +67,9 @@ export const MAX_VIDEO_BITRATE = 2_500_000;
 /** Bitrate floor for a small but visible picture. */
 export const MIN_VIDEO_BITRATE = 150_000;
 const FULL_HD = 1920 * 1080;
+/** A shared screen: sharp text matters more than smooth motion. */
+export const SCREEN_BITRATE = 4_000_000;
+export const SCREEN_FRAMERATE = 30;
 
 export interface Size {
   w: number;
@@ -135,7 +145,7 @@ type Send = (to: string, data: SignalData) => void;
 
 export class Mesh {
   private links = new Map<string, Link>();
-  private tracks: Record<Kind, MediaStreamTrack | null> = { audio: null, video: null };
+  private tracks: Record<Kind, MediaStreamTrack | null> = { audio: null, video: null, screen: null };
   private leaving = new Map<string, ReturnType<typeof setTimeout>>();
   private early: [string, SignalData][] = [];
   /** Signals are handled one at a time, in order: a candidate must not
@@ -297,8 +307,12 @@ class Link {
   private makingOffer = false;
   private ignoreOffer = false;
   private stream = new MediaStream();
+  private screen = new MediaStream();
   private version = 0;
-  private tx: Record<Kind, RTCRtpTransceiver | null> = { audio: null, video: null };
+  private tx: Record<Kind, RTCRtpTransceiver | null> = { audio: null, video: null, screen: null };
+  /** The other side's first description has been applied (the answering
+   * side has adopted the offer's transceivers). */
+  private adopted = false;
   private closed = false;
   /** Size messages travel here (both sides create it as channel 0). */
   private channel: RTCDataChannel | null = null;
@@ -324,9 +338,13 @@ class Link {
     this.pc = new RTCPeerConnection(config);
     this.pc.onicecandidate = ({ candidate }) => this.send_({ candidate: candidate?.toJSON() ?? null });
     this.pc.onnegotiationneeded = () => void this.offer();
-    this.pc.ontrack = ({ track }) => {
-      for (const t of this.stream.getTracks()) if (t.kind === track.kind && t !== track) this.stream.removeTrack(t);
-      if (!this.stream.getTracks().includes(track)) this.stream.addTrack(track);
+    this.pc.ontrack = ({ track, transceiver }) => {
+      // The first video is the camera, any later one a shared screen (both
+      // sides see the transceivers in the same, m-line order).
+      const videos = this.pc.getTransceivers().filter((t) => t.receiver.track.kind === "video");
+      const into = track.kind === "video" && transceiver && videos.indexOf(transceiver) > 0 ? this.screen : this.stream;
+      for (const t of into.getTracks()) if (t.kind === track.kind && t !== track) into.removeTrack(t);
+      if (!into.getTracks().includes(track)) into.addTrack(track);
       this.version++;
       this.onChange();
     };
@@ -343,8 +361,12 @@ class Link {
         this.tx[kind] = t;
         void this.send(kind, this.local(kind));
       }
+      this.tx.screen = this.pc.addTransceiver("video", { direction: this.local("screen") ? "sendrecv" : "recvonly" });
+      void this.send("screen", this.local("screen"));
       preferHardwareVideo(this.tx.video);
+      preferHardwareVideo(this.tx.screen);
       this.openChannel();
+      this.adopted = true;
     }
   }
 
@@ -433,6 +455,7 @@ class Link {
     return {
       id: this.id,
       stream: this.stream,
+      screen: this.screen,
       state: this.pc.connectionState,
       version: this.version,
       audio: this.tx.audio?.receiver ?? null,
@@ -440,14 +463,55 @@ class Link {
   }
 
   async send(kind: Kind, track: MediaStreamTrack | null) {
+    if (this.closed) return;
+    if (kind === "screen") this.screenDirection(track !== null);
     const t = this.tx[kind];
-    if (!t || this.closed) return; // adopted later, with the current track
+    if (!t) return; // adopted later, with the current track
     try {
       await t.sender.replaceTrack(track);
       if (kind === "video" && track) this.encode();
+      if (kind === "screen" && track) this.encodeScreen();
     } catch (e) {
       console.warn("couldn't switch the call's", kind, e);
     }
+  }
+
+  /** Send the screen only while sharing (see the top of the file). */
+  private screenDirection(sharing: boolean) {
+    let t = this.tx.screen;
+    if (!t) {
+      // Connected to an app that offered no screen transceiver (older, or
+      // the offer hasn't arrived yet): add one when there's something to send.
+      if (!sharing || !this.adopted) return;
+      t = this.tx.screen = this.pc.addTransceiver("video", { direction: "sendrecv" });
+      preferHardwareVideo(t);
+      return;
+    }
+    const want: RTCRtpTransceiverDirection = sharing ? "sendrecv" : "recvonly";
+    if (t.direction !== want) t.direction = want; // renegotiates
+  }
+
+  /** Text on a shared screen stays sharp; motion may get choppy. */
+  private encodeScreen() {
+    const sender = this.tx.screen?.sender;
+    if (!sender || this.closed) return;
+    this.encoding = this.encoding
+      .then(async () => {
+        const p = sender.getParameters() as RTCRtpSendParameters & { degradationPreference?: string };
+        if (!p.encodings?.length) p.encodings = [{}];
+        Object.assign(p.encodings[0], { active: true, scaleResolutionDownBy: 1, maxBitrate: SCREEN_BITRATE, maxFramerate: SCREEN_FRAMERATE });
+        p.degradationPreference = "maintain-resolution";
+        try {
+          await sender.setParameters(p);
+        } catch {
+          // WebKit may not take every setting: the bitrate matters most.
+          const q = sender.getParameters();
+          if (!q.encodings?.length) q.encodings = [{}];
+          Object.assign(q.encodings[0], { maxBitrate: SCREEN_BITRATE });
+          await sender.setParameters(q);
+        }
+      })
+      .catch((err) => console.warn("couldn't set screen quality for", this.id, err));
   }
 
   async onSignal({ description, candidate, session, to_session }: SignalData) {
@@ -466,6 +530,7 @@ class Link {
         await this.pc.setRemoteDescription(description.sdp ? { ...description, sdp: richOpus(description.sdp) } : description);
         if (description.type === "offer") {
           this.adopt();
+          this.adopted = true;
           await this.pc.setLocalDescription();
           this.send_({ description: this.pc.localDescription!.toJSON() });
         }
@@ -517,15 +582,23 @@ class Link {
     }, this.retryAfter);
   }
 
-  /** The answering side: use the transceivers the offer created. */
+  /** The answering side: use the transceivers the offer created (the first
+   * video one for the camera, the second for a shared screen). */
   private adopt() {
     for (const t of this.pc.getTransceivers()) {
-      const kind = t.receiver.track.kind as Kind;
-      if ((kind !== "audio" && kind !== "video") || this.tx[kind]) continue;
+      const media = t.receiver.track.kind;
+      if (media !== "audio" && media !== "video") continue;
+      const kind: Kind = media === "audio" ? "audio" : !this.tx.video || this.tx.video === t ? "video" : "screen";
+      if (this.tx[kind] || Object.values(this.tx).includes(t)) continue;
       this.tx[kind] = t;
-      t.direction = "sendrecv";
-      if (kind === "video") preferHardwareVideo(t);
+      t.direction = kind === "screen" ? (this.local("screen") ? "sendrecv" : "recvonly") : "sendrecv";
+      if (kind !== "audio") preferHardwareVideo(t);
       void this.send(kind, this.local(kind));
+    }
+    // Sharing with an app whose offer had no screen transceiver: add ours.
+    if (!this.tx.screen && this.local("screen")) {
+      this.adopted = true;
+      void this.send("screen", this.local("screen"));
     }
     // The offer carries the size channel's m-line by now.
     this.openChannel();

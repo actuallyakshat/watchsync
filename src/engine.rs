@@ -46,8 +46,14 @@ pub enum UiCmd {
     GetFile { offer_id: String },
     CancelTransfer { id: u64 },
     React { reaction: Reaction },
-    /// This person's mic / camera went on or off (the call window owns them).
-    SetCall { mic: bool, cam: bool },
+    /// This person's mic / camera / screen share went on or off (the call
+    /// window owns them).
+    SetCall {
+        mic: bool,
+        cam: bool,
+        #[serde(default)]
+        screen: bool,
+    },
     /// A WebRTC signalling message for the peer with endpoint id `to`.
     Signal { to: String, data: serde_json::Value },
     /// Show a short message on the movie ("Mic muted").
@@ -206,6 +212,8 @@ pub struct PeerRow {
     pub id: String,
     pub mic: bool,
     pub cam: bool,
+    /// Sharing their screen (or a window) in the call.
+    pub screen: bool,
 }
 
 /// One line in the room's chat: a message or a reaction.
@@ -274,6 +282,7 @@ pub struct Snapshot {
     pub my_id: String,
     pub mic: bool,
     pub cam: bool,
+    pub screen: bool,
     /// The movie window is fullscreen.
     pub player_fullscreen: bool,
     /// This Mac's fallback relay for the call (a TURN server on 127.0.0.1).
@@ -326,6 +335,7 @@ struct Peer {
     offer: Option<Offer>,
     mic: bool,
     cam: bool,
+    screen: bool,
 }
 
 /// Longest display name, in characters.
@@ -424,9 +434,10 @@ struct Engine {
     sub_scale_by: Option<String>,
     applied_sub_scale: Option<(u64, f64)>,
 
-    /// This person's mic / camera in the call.
+    /// This person's mic / camera / screen share in the call.
     mic: bool,
     cam: bool,
+    screen: bool,
     player_fullscreen: bool,
 }
 
@@ -503,6 +514,7 @@ pub async fn run_with(
         applied_sub_scale: None,
         mic: false,
         cam: false,
+        screen: false,
         player_fullscreen: false,
     };
     e.publish();
@@ -671,13 +683,14 @@ impl Engine {
                 self.add_chat(self.name.clone(), None, Some(reaction), true);
                 self.relay(Msg::React { from: self.name.clone(), reaction }, None);
             }
-            UiCmd::SetCall { mic, cam } => {
+            UiCmd::SetCall { mic, cam, screen } => {
                 self.mic = mic;
                 self.cam = cam;
+                self.screen = screen;
                 if self.is_host() {
                     self.refresh_peers();
                 } else if let Some(tx) = self.host_tx() {
-                    let _ = tx.send(Msg::Call { mic, cam });
+                    let _ = tx.send(Msg::Call { mic, cam, screen });
                 }
             }
             UiCmd::Signal { to, data } => {
@@ -860,6 +873,7 @@ impl Engine {
         // The call window sets these again when it joins the next call.
         self.mic = false;
         self.cam = false;
+        self.screen = false;
     }
 
     /// Apply the room's crop to the player if it isn't already. Needs the
@@ -1258,6 +1272,7 @@ impl Engine {
                             offer: None,
                             mic: false,
                             cam: false,
+                            screen: false,
                         },
                     );
                 }
@@ -1362,6 +1377,7 @@ impl Engine {
         let _ = link.tx.send(Msg::Call {
             mic: self.mic,
             cam: self.cam,
+            screen: self.screen,
         });
         // Guests never publish the invite (the host does).
         self.invite_publisher = None;
@@ -1999,10 +2015,11 @@ impl Engine {
                 self.route(Msg::FileRequest { offer_id, to, from_id, from });
             }
             msg @ (Msg::FileCode { .. } | Msg::FileRefused { .. }) => self.route(msg),
-            Msg::Call { mic, cam } => {
-                if (peer.mic, peer.cam) != (mic, cam) {
+            Msg::Call { mic, cam, screen } => {
+                if (peer.mic, peer.cam, peer.screen) != (mic, cam, screen) {
                     peer.mic = mic;
                     peer.cam = cam;
+                    peer.screen = screen;
                     self.refresh_peers();
                 }
             }
@@ -2051,6 +2068,7 @@ impl Engine {
             file_name: self.file_name.clone(),
             mic: self.mic,
             cam: self.cam,
+            screen: self.screen,
             invite: self.invite.clone().unwrap_or_default(),
         }];
         // Join order: this is also the order of succession.
@@ -2067,6 +2085,7 @@ impl Engine {
             file_name: None,
             mic: p.mic,
             cam: p.cam,
+            screen: p.screen,
             invite: String::new(),
         }));
         self.room_peers = list.clone();
@@ -2113,6 +2132,7 @@ impl Engine {
                 id: p.id.clone(),
                 mic: p.mic,
                 cam: p.cam,
+                screen: p.screen,
             })
             .collect();
         let snapshot = Snapshot {
@@ -2158,6 +2178,7 @@ impl Engine {
             my_id: self.my_id(),
             mic: self.mic,
             cam: self.cam,
+            screen: self.screen,
             player_fullscreen: self.player_fullscreen,
             turn: self.relay.as_ref().map(|r| r.info.clone()),
         };

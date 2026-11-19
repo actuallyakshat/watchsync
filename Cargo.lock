@@ -6444,6 +6444,8 @@ version = "0.5.3"
 dependencies = [
  "anyhow",
  "async-channel",
+ "block2",
+ "objc2",
  "serde",
  "serde_json",
  "tauri",

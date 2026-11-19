@@ -77,12 +77,17 @@ fn everyone_sees_whose_mic_and_camera_are_on() {
     riya.send(UiCmd::Join { code });
     riya.wait("joined", 30, |s| s.phase == Phase::Room);
 
-    riya.send(UiCmd::SetCall { mic: true, cam: false });
-    host.send(UiCmd::SetCall { mic: false, cam: true });
-    let find = |s: &watchsync::engine::Snapshot, name: &str| s.peers.iter().find(|p| p.name == name).map(|p| (p.mic, p.cam));
+    riya.send(UiCmd::SetCall { mic: true, cam: false, screen: true });
+    host.send(UiCmd::SetCall { mic: false, cam: true, screen: false });
+    let find = |s: &watchsync::engine::Snapshot, name: &str| s.peers.iter().find(|p| p.name == name).map(|p| (p.mic, p.cam, p.screen));
     for p in [&mut host, &mut riya] {
-        p.wait("call state", 10, |s| find(s, "Riya") == Some((true, false)) && find(s, "Host") == Some((false, true)));
+        p.wait("call state", 10, |s| find(s, "Riya") == Some((true, false, true)) && find(s, "Host") == Some((false, true, false)));
     }
+    assert!(riya.now().screen && !host.now().screen);
+
+    // Stopping the share is seen too.
+    riya.send(UiCmd::SetCall { mic: true, cam: false, screen: false });
+    host.wait("share stopped", 10, |s| find(s, "Riya") == Some((true, false, false)));
 }
 
 #[test]

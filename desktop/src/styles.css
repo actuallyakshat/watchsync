@@ -1790,3 +1790,134 @@ html.call-window #root {
   width: 2px;
   background: var(--call-ink);
 }
+
+/* ---------------------------------------------------------- screen share */
+
+/* You're sharing: red, like a recording light. */
+.call-btn.sharing {
+  background: var(--call-off);
+  color: #fff;
+}
+
+.call-btn.sharing:hover {
+  background: #ff8478;
+}
+
+/* Keep the controls up while the share menu is open. */
+.call-controls.pinned-open {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* A screen is shown whole: cropping would cut off what they're showing. */
+.tile.screen {
+  background: #000;
+}
+
+.tile.screen video {
+  object-fit: contain;
+}
+
+.tile.screen .tile-name svg {
+  color: var(--call-ink);
+}
+
+.call-sharing {
+  position: absolute;
+  inset: 8px 8px auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px 10px;
+  border-radius: 8px;
+  background: rgb(24 24 27 / 0.92);
+  border: 1px solid var(--call-line);
+}
+
+.call-sharing > svg {
+  flex: none;
+  color: var(--call-off);
+}
+
+.call-sharing span {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.call-sharing-stop {
+  flex: none;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--call-off);
+  color: #fff;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.share-menu {
+  position: absolute;
+  left: 50%;
+  bottom: 52px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: min(260px, calc(100% - 16px));
+  max-height: calc(100% - 60px);
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--call-line);
+  border-radius: 10px;
+  background: rgb(24 24 27 / 0.97);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.5);
+}
+
+.share-menu-title {
+  margin: 2px 6px 4px;
+  color: var(--call-muted);
+}
+
+.share-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--call-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.share-option:hover,
+.share-option:focus-visible {
+  background: rgb(255 255 255 / 0.1);
+}
+
+.share-option span {
+  font-weight: 500;
+}
+
+.share-option small {
+  color: var(--call-muted);
+  font-size: 11px;
+}
+
+.share-menu-cancel {
+  align-self: flex-end;
+  margin-top: 2px;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.08);
+  color: var(--call-ink);
+  font: inherit;
+  cursor: pointer;
+}
