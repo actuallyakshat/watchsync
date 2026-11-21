@@ -14,6 +14,8 @@ export interface Person {
   /** Sharing their screen. */
   screen: boolean;
   remote: Remote | null;
+  /** How the call's iroh link to them travels, once there is one. */
+  iroh?: "direct" | "relayed" | null;
 }
 
 export function initial(name: string): string {
@@ -125,8 +127,17 @@ export function Tile({
         {label}
         {!screen && !person.mic && <MicIcon off />}
         {relayed && (
-          <span className="tile-path" data-tip="No direct connection: relayed through iroh">
-            via iroh
+          <span
+            className="tile-path"
+            data-tip={
+              person.iroh === "direct"
+                ? "The call goes through iroh's link, which is still direct, Mac to Mac"
+                : person.iroh === "relayed"
+                  ? "No direct connection: relayed through iroh's servers"
+                  : "The call goes through iroh"
+            }
+          >
+            {person.iroh === "direct" ? "via iroh · direct" : person.iroh === "relayed" ? "via iroh relay" : "via iroh"}
           </span>
         )}
       </span>

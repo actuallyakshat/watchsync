@@ -136,6 +136,15 @@ async fn two_macs_relay_call_packets_over_iroh() {
     let (from, data) = until_arrives(&ca, &cb, rb, b"hello from a").await;
     assert_eq!((from, data.as_slice()), (ra, &b"hello from a"[..]));
 
+    // Each side can tell how the link travels: two apps on one Mac connect
+    // directly (iroh may start on its relay, then switch).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while a.relay.path(&b.id).as_deref() != Some("direct") {
+        assert!(Instant::now() < deadline, "path: {:?}", a.relay.path(&b.id));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(a.relay.path("not an id"), None);
+
     // B → A over a channel, with a packet too big for one datagram.
     let ok = cb
         .request(method::CHANNEL_BIND, vec![(attr::CHANNEL_NUMBER, vec![0x40, 0x01, 0, 0]), (attr::XOR_PEER_ADDRESS, stun::xor_addr(ra))])

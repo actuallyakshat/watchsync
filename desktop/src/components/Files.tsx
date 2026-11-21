@@ -5,6 +5,8 @@ import { formatSize, movieTitle } from "../format";
 interface Props {
   snap: Snapshot;
   crocInstalled: boolean;
+  /** Installed, but too old to connect Macs directly. */
+  crocOutdated: boolean;
   hasBrew: boolean;
   onInstallCroc: () => Promise<void>;
   onShare: (method: SendMethod) => void;
@@ -14,7 +16,7 @@ interface Props {
 }
 
 /** Sending and getting the movie file itself: directly, or with croc. */
-export function Files({ snap, crocInstalled, hasBrew, onInstallCroc, onShare, onStopSharing, onGet, onCancel }: Props) {
+export function Files({ snap, crocInstalled, crocOutdated, hasBrew, onInstallCroc, onShare, onStopSharing, onGet, onCancel }: Props) {
   const [needCroc, setNeedCroc] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
@@ -82,6 +84,22 @@ export function Files({ snap, crocInstalled, hasBrew, onInstallCroc, onShare, on
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {crocInstalled && crocOutdated && (canShare || offers.some((o) => o.method === "croc")) && (
+        <div className="croc-setup" role="status">
+          <p>
+            Your croc is an old version, so croc transfers always go through croc's public relay, which is slow. Newer
+            croc connects your Macs directly when it can (your friend needs it too).
+            {!hasBrew && " Update it in Terminal with: brew upgrade croc"}
+          </p>
+          {hasBrew && (
+            <button className="primary" onClick={install} disabled={installing}>
+              {installing ? "Updating croc…" : "Update croc"}
+            </button>
+          )}
+          {installError && <p className="error-text">{installError}</p>}
         </div>
       )}
 

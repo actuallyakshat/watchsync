@@ -108,6 +108,17 @@ pub struct Relay {
     tasks: Vec<JoinHandle<()>>,
 }
 
+impl Relay {
+    /// How the call's link to the friend with endpoint id `id` travels:
+    /// "direct" (Mac to Mac) or "relayed" (through iroh's servers). `None`
+    /// until there's a link.
+    pub fn path(&self, id: &str) -> Option<String> {
+        let id = id.parse::<EndpointId>().ok()?;
+        let conn = self.inner.state.lock().unwrap().links.get(&id).cloned()?;
+        crate::share::route(&conn)
+    }
+}
+
 impl Drop for Relay {
     fn drop(&mut self) {
         for t in &self.tasks {

@@ -218,6 +218,9 @@ pub struct PeerRow {
     pub cam: bool,
     /// Sharing their screen (or a window) in the call.
     pub screen: bool,
+    /// How the call's iroh link to them travels ("direct" or "relayed"),
+    /// once there is one. The call uses it when WebRTC can't connect alone.
+    pub iroh: Option<String>,
 }
 
 /// One line in the room's chat: a message or a reaction.
@@ -2222,6 +2225,7 @@ impl Engine {
                 mic: p.mic,
                 cam: p.cam,
                 screen: p.screen,
+                iroh: self.relay.as_ref().and_then(|r| r.path(&p.id)),
             })
             .collect();
         let snapshot = Snapshot {

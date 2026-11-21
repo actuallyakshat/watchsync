@@ -30,6 +30,8 @@ struct PlayerSetup {
     has_brew: bool,
     /// croc (for sending movies) is installed.
     croc: bool,
+    /// ...but too old to connect directly, so croc transfers are slow.
+    croc_outdated: bool,
 }
 
 #[tauri::command]
@@ -38,10 +40,11 @@ fn player_setup() -> PlayerSetup {
         installed: mpv::is_installed(),
         has_brew: mpv::find_brew().is_some(),
         croc: share::is_installed(),
+        croc_outdated: share::is_outdated(),
     }
 }
 
-/// `brew install croc`.
+/// `brew install croc`, or `brew upgrade croc` if it's too old.
 #[tauri::command]
 async fn install_croc() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(share::install_with_brew)
@@ -58,7 +61,7 @@ async fn install_player() -> Result<(), String> {
         if !mpv::is_installed() {
             mpv::install_with_brew()?;
         }
-        if !share::is_installed() {
+        if !share::is_installed() || share::is_outdated() {
             share::install_with_brew()?;
         }
         anyhow::Ok(())

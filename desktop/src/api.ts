@@ -89,6 +89,8 @@ export interface Person {
   cam: boolean;
   /** Sharing their screen or a window (missing from older apps). */
   screen?: boolean;
+  /** How the call's iroh link to them travels, once there is one. */
+  iroh?: "direct" | "relayed" | null;
 }
 
 export interface Snapshot {
@@ -170,6 +172,8 @@ export interface PlayerSetup {
   has_brew: boolean;
   /** croc, for sending movies. */
   croc: boolean;
+  /** croc is too old to connect Macs directly (always slow). */
+  croc_outdated?: boolean;
 }
 
 export const send = (cmd: Command) => invoke<void>("send", { cmd });

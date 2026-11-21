@@ -219,6 +219,7 @@ export function App() {
               onOpenFound={(path) => void send({ type: "open_file", path })}
               files={{
                 crocInstalled: setup?.croc ?? false,
+                crocOutdated: setup?.croc_outdated ?? false,
                 hasBrew: setup?.has_brew ?? false,
                 onInstallCroc: async () => {
                   await installCroc();
