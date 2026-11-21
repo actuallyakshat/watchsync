@@ -442,7 +442,7 @@ export function CallApp() {
     () =>
       snap.peers
         .filter((p) => p.id && p.id !== snap.my_id)
-        .map((p) => ({ id: p.id, name: p.name, cam: p.cam, mic: p.mic, screen: !!p.screen, remote: byId.get(p.id) ?? null })),
+        .map((p) => ({ id: p.id, name: p.name, cam: p.cam, mic: p.mic, screen: !!p.screen, remote: byId.get(p.id) ?? null, iroh: p.iroh ?? null })),
     [snap.peers, snap.my_id, byId],
   );
   const ids = people.map((p) => p.id).join(",");
@@ -846,7 +846,7 @@ export function CallApp() {
             if (!c || !c.running()) return "unprocessed";
             return { level: c.level(), open: c.open(), thresholdDb: c.thresholdDb() };
           }}
-          paths={people.map((p) => ({ name: p.name, path: paths.get(p.id) ?? null }))}
+          paths={people.map((p) => ({ name: p.name, path: paths.get(p.id) ?? null, iroh: p.iroh ?? null }))}
           relayAvailable={!!turn}
           onClose={() => setSettingsOpen(false)}
         />
@@ -1078,7 +1078,7 @@ function CallSettings({
   /** Live input level and gate state; "unprocessed" if the mic is sent as
    * it is; null with the mic off. */
   micMeter: () => MeterReading;
-  paths: { name: string; path: Path | null }[];
+  paths: { name: string; path: Path | null; iroh: "direct" | "relayed" | null }[];
   relayAvailable: boolean;
   onClose: () => void;
 }) {
@@ -1139,7 +1139,16 @@ function CallSettings({
         </p>
         {paths.map((p) => (
           <p key={p.name} className="call-path">
-            {p.name}: {p.path === "relay" ? "relayed through iroh" : p.path === "direct" ? "direct" : "connecting…"}
+            {p.name}:{" "}
+            {p.path === "relay"
+              ? p.iroh === "direct"
+                ? "through iroh, which is direct (Mac to Mac)"
+                : p.iroh === "relayed"
+                  ? "through iroh's relay servers (no direct link)"
+                  : "relayed through iroh"
+              : p.path === "direct"
+                ? "direct"
+                : "connecting…"}
           </p>
         ))}
       </details>

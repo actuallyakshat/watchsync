@@ -33,9 +33,50 @@ pub fn is_installed() -> bool {
     find_croc().is_some()
 }
 
-/// `brew install croc` (blocking).
+/// The first croc that connects two Macs directly when it can (its
+/// "Tailcat" transport), rather than always through croc's public relay.
+/// Both sides need it; with an older croc on either, croc uses the relay.
+pub const DIRECT_CROC: (u32, u32, u32) = (11, 3, 3);
+
+/// The installed croc's version, from `croc --version`.
+pub fn croc_version() -> Option<(u32, u32, u32)> {
+    let out = std::process::Command::new(find_croc()?).arg("--version").output().ok()?;
+    parse_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// "croc version v10.0.13-05cfdb3" or "croc version 11.6.5" → (major, minor, patch).
+pub fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
+    let v = text.split_whitespace().find(|w| w.trim_start_matches('v').starts_with(|c: char| c.is_ascii_digit()))?;
+    let core = v.trim_start_matches('v').split(['-', '+']).next()?;
+    let mut n = core.split('.').map(|p| p.parse::<u32>().ok());
+    Some((n.next()??, n.next().flatten().unwrap_or(0), n.next().flatten().unwrap_or(0)))
+}
+
+/// Installed, but too old to connect directly (so always slow).
+pub fn is_outdated() -> bool {
+    croc_version().is_some_and(|v| v < DIRECT_CROC)
+}
+
+/// `brew install croc`, or `brew upgrade croc` if it's too old (blocking).
 pub fn install_with_brew() -> Result<()> {
-    crate::mpv::brew_install("croc")
+    if !is_installed() {
+        return crate::mpv::brew_install("croc");
+    }
+    if !is_outdated() {
+        return Ok(());
+    }
+    let brew = crate::mpv::find_brew().ok_or_else(|| anyhow!("Homebrew is not installed"))?;
+    // Let brew update its formulae, or it wouldn't know the new croc.
+    let out = std::process::Command::new(brew)
+        .args(["upgrade", "croc"])
+        .output()
+        .map_err(|e| anyhow!("couldn't run brew: {e}"))?;
+    if is_outdated() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("croc is still old");
+        bail!("brew upgrade croc failed: {last}");
+    }
+    Ok(())
 }
 
 /// An unguessable croc code: whoever has it gets the file.
@@ -650,7 +691,7 @@ async fn receive_on(
 }
 
 /// "direct" or "relayed": how the connection's bytes travel right now.
-fn route(conn: &Connection) -> Option<String> {
+pub fn route(conn: &Connection) -> Option<String> {
     let paths = conn.paths();
     let selected = paths.iter().find(|p| p.is_selected())?;
     Some(if selected.is_ip() { "direct" } else { "relayed" }.to_string())
@@ -801,6 +842,16 @@ mod tests {
     fn partial_downloads_are_hidden_and_tied_to_the_copy() {
         let p = partial_path(Path::new("/d"), "Movie.mkv", "ab12");
         assert_eq!(p, Path::new("/d/.Movie.mkv.ab12.part"));
+    }
+
+    #[test]
+    fn croc_versions_are_read_and_compared() {
+        assert_eq!(parse_version("croc version 11.6.5\n"), Some((11, 6, 5)));
+        assert_eq!(parse_version("croc version v10.0.13-05cfdb3"), Some((10, 0, 13)));
+        assert_eq!(parse_version("croc version v9.6"), Some((9, 6, 0)));
+        assert_eq!(parse_version("croc version dev"), None);
+        assert!(parse_version("croc version v11.3.2").unwrap() < DIRECT_CROC);
+        assert!(parse_version("croc version 11.3.3").unwrap() >= DIRECT_CROC);
     }
 
     #[test]

@@ -286,6 +286,19 @@ test("the call can relay through iroh, on its own or when forced, and says when 
   FakePC.all.at(-1)!.connectionState = "connected";
   expect(await screen.findByText("via iroh", {}, { timeout: 4000 })).toBeInTheDocument();
   expect(screen.getByText("Riya: relayed through iroh")).toBeInTheDocument();
+
+  // Once iroh says how its own link travels, both places say so.
+  const withIroh = (iroh: "direct" | "relayed"): Snapshot => ({
+    ...room,
+    turn,
+    peers: riya(true).peers.map((p) => (p.id === "b" ? { ...p, iroh } : p)),
+  });
+  emit(withIroh("direct"));
+  expect(await screen.findByText("via iroh · direct")).toBeInTheDocument();
+  expect(screen.getByText("Riya: through iroh, which is direct (Mac to Mac)")).toBeInTheDocument();
+  emit(withIroh("relayed"));
+  expect(await screen.findByText("via iroh relay")).toBeInTheDocument();
+  expect(screen.getByText("Riya: through iroh's relay servers (no direct link)")).toBeInTheDocument();
 });
 
 test("the mic is cleaned up out of the box, and can be tuned", async () => {

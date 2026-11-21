@@ -8,7 +8,7 @@ import { EMPTY } from "./api";
 const sent: unknown[] = [];
 let shortcutError: string | null = null;
 let emit: (s: Snapshot) => void = () => {};
-let setup = { installed: true, has_brew: true, croc: true };
+let setup: { installed: boolean; has_brew: boolean; croc: boolean; croc_outdated?: boolean } = { installed: true, has_brew: true, croc: true };
 let pendingUpdate: { version: string; downloadAndInstall: () => Promise<void> } | null = null;
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -397,6 +397,16 @@ test("movie file: share directly or with croc; croc is asked for only when neede
   await act(async () => emit({ ...room, sharing: true, sharing_method: "direct" }));
   expect(screen.getByText(/sent straight from your Mac/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Stop sharing" })).toBeInTheDocument();
+});
+
+test("movie file: an old croc is pointed out, with a one-click update", async () => {
+  setup = { installed: true, has_brew: true, croc: true, croc_outdated: true };
+  render(<App />);
+  await act(async () => emit(room));
+  expect(screen.getByText(/Your croc is an old version/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Update croc" }));
+  const { invoke } = await import("@tauri-apps/api/core");
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("install_croc"));
 });
 
 test("movie file: a direct copy needs no croc to get; a croc copy does", async () => {
