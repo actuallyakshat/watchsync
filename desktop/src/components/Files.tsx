@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Offer, Snapshot, Transfer } from "../api";
+import type { Offer, SendMethod, Snapshot, Transfer } from "../api";
 import { formatSize, movieTitle } from "../format";
 
 interface Props {
@@ -7,20 +7,21 @@ interface Props {
   crocInstalled: boolean;
   hasBrew: boolean;
   onInstallCroc: () => Promise<void>;
-  onShare: () => void;
+  onShare: (method: SendMethod) => void;
   onStopSharing: () => void;
   onGet: (offerId: string) => void;
   onCancel: (id: number) => void;
 }
 
-/** Sending and getting the movie file itself, with croc. */
+/** Sending and getting the movie file itself: directly, or with croc. */
 export function Files({ snap, crocInstalled, hasBrew, onInstallCroc, onShare, onStopSharing, onGet, onCancel }: Props) {
   const [needCroc, setNeedCroc] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
 
-  const withCroc = (action: () => void) => () => {
-    if (crocInstalled) action();
+  /** Only croc transfers need croc installed. */
+  const withCroc = (method: SendMethod, action: () => void) => () => {
+    if (method === "direct" || crocInstalled) action();
     else setNeedCroc(true);
   };
   const install = async () => {
@@ -50,24 +51,36 @@ export function Files({ snap, crocInstalled, hasBrew, onInstallCroc, onShare, on
       </div>
 
       {offers.map((o) => (
-        <OfferRow key={o.offer_id} offer={o} onGet={withCroc(() => onGet(o.offer_id))} busy={isBusy(snap.transfers, o)} />
+        <OfferRow
+          key={o.offer_id}
+          offer={o}
+          onGet={withCroc(o.method ?? "croc", () => onGet(o.offer_id))}
+          busy={isBusy(snap.transfers, o)}
+        />
       ))}
 
       {canShare && (
         <div className="file-row">
           <p>
             {snap.sharing
-              ? "You're offering your copy. Friends who don't have it can get it from you."
-              : "Friends without the movie can get your copy, sent straight from your Mac."}
+              ? snap.sharing_method === "croc"
+                ? "You're offering your copy, sent with croc. Friends who don't have it can get it from you."
+                : "You're offering your copy, sent straight from your Mac. Friends who don't have it can get it from you."
+              : "Friends without the movie can get your copy. Directly is fastest: straight from your Mac to theirs when your networks allow it. croc goes through croc's public relay: a backup if direct is slow, or for friends who haven't updated."}
           </p>
           {snap.sharing ? (
             <button className="ghost" onClick={onStopSharing}>
               Stop sharing
             </button>
           ) : (
-            <button className="ghost" onClick={withCroc(onShare)}>
-              Share my copy
-            </button>
+            <div className="share-choice">
+              <button className="ghost" onClick={() => onShare("direct")}>
+                Share directly
+              </button>
+              <button className="ghost" onClick={withCroc("croc", () => onShare("croc"))}>
+                Share with croc
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -75,7 +88,7 @@ export function Files({ snap, crocInstalled, hasBrew, onInstallCroc, onShare, on
       {needCroc && !crocInstalled && (
         <div className="croc-setup" role="alert">
           <p>
-            Sending movies uses croc, a free file-transfer tool. It isn't on this Mac yet.
+            This uses croc, a free file-transfer tool. It isn't on this Mac yet.
             {!hasBrew && " Install it in Terminal with: brew install croc"}
           </p>
           {hasBrew && (
@@ -115,7 +128,8 @@ function OfferRow({ offer, onGet, busy }: { offer: Offer; onGet: () => void; bus
   return (
     <div className="file-row offer">
       <p>
-        <b>{offer.from}</b> can send you their copy of {title}.
+        <b>{offer.from}</b> can send you their copy of {title}
+        {offer.method === "direct" ? ", straight from their Mac." : ", with croc."}
       </p>
       <button className="primary" onClick={onGet} disabled={busy}>
         Get {offer.from}'s copy ({formatSize(offer.size)})
@@ -133,7 +147,14 @@ function TransferRow({ t, onCancel, onRetry }: { t: Transfer; onCancel: () => vo
       detail = t.direction === "receive" ? `Waiting for ${t.peer}…` : `Waiting for ${t.peer} to connect…`;
       break;
     case "running":
-      detail = [`${p.percent}%`, p.speed, p.eta && p.eta !== "0s" ? `${p.eta} left` : null].filter(Boolean).join(", ");
+      detail = [
+        `${p.percent}%`,
+        p.speed,
+        p.eta && p.eta !== "0s" ? `${p.eta} left` : null,
+        p.via === "direct" ? "direct" : p.via === "relayed" ? "through a relay (slower)" : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
       break;
     case "checking":
       detail = "Checking the file…";

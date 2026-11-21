@@ -332,6 +332,7 @@ const offer = {
   name: "The Odyssey 2026 1080p BluRay HEVC x265 5.1 BONE.mkv",
   size: 4470387000,
   fingerprint: "abc",
+  method: "direct" as const,
 };
 
 test("movie file: get a friend's copy, watch its progress, cancel", async () => {
@@ -355,7 +356,7 @@ test("movie file: get a friend's copy, watch its progress, cancel", async () => 
           peer: "Riya",
           file: offer.name,
           size: offer.size,
-          progress: { percent: 45, amount: "1.9/4.2 GB", speed: "12 MB/s", eta: "3m10s" },
+          progress: { percent: 45, amount: "1.9/4.2 GB", speed: "12 MB/s", eta: "3m10s", via: "direct" },
           state: "running",
           message: null,
           path: null,
@@ -364,7 +365,7 @@ test("movie file: get a friend's copy, watch its progress, cancel", async () => 
     }),
   );
   expect(screen.getByText("Getting The Odyssey from Riya")).toBeInTheDocument();
-  expect(screen.getByText("45%, 12 MB/s, 3m10s left")).toBeInTheDocument();
+  expect(screen.getByText("45%, 12 MB/s, 3m10s left, direct")).toBeInTheDocument();
   expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "45");
   expect(screen.getByRole("button", { name: /Get Riya's copy/ })).toBeDisabled();
   await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -377,14 +378,41 @@ test("movie file: no offer shown when you already have the right copy", async ()
   expect(screen.queryByRole("button", { name: /Get Riya's copy/ })).not.toBeInTheDocument();
 });
 
-test("movie file: share your copy; croc is offered only when needed", async () => {
+test("movie file: share directly or with croc; croc is asked for only when needed", async () => {
   setup = { installed: true, has_brew: true, croc: false };
   render(<App />);
   await act(async () => emit(room));
-  expect(screen.queryByText(/Sending movies uses croc/)).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Share my copy" }));
-  expect(sent).not.toContainEqual({ type: "share_file" });
-  expect(screen.getByText(/Sending movies uses croc/)).toBeInTheDocument();
+  expect(screen.queryByText(/uses croc/)).not.toBeInTheDocument();
+
+  // croc isn't installed: choosing it asks to install it, and doesn't share.
+  await userEvent.click(screen.getByRole("button", { name: "Share with croc" }));
+  expect(sent).not.toContainEqual({ type: "share_file", method: "croc" });
+  expect(screen.getByText(/uses croc/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Install croc" })).toBeInTheDocument();
+
+  // Direct needs nothing installed.
+  await userEvent.click(screen.getByRole("button", { name: "Share directly" }));
+  expect(sent).toContainEqual({ type: "share_file", method: "direct" });
+
+  await act(async () => emit({ ...room, sharing: true, sharing_method: "direct" }));
+  expect(screen.getByText(/sent straight from your Mac/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Stop sharing" })).toBeInTheDocument();
+});
+
+test("movie file: a direct copy needs no croc to get; a croc copy does", async () => {
+  setup = { installed: true, has_brew: true, croc: false };
+  render(<App />);
+  const noFile = { ...room, is_host: false, file_name: null, player_open: false, my_file: "no_file" as const };
+  await act(async () => emit({ ...noFile, offers: [offer] }));
+  expect(screen.getByText(/straight from their Mac/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /Get Riya's copy/ }));
+  expect(sent).toContainEqual({ type: "get_file", offer_id: "o1" });
+
+  sent.length = 0;
+  await act(async () => emit({ ...noFile, offers: [{ ...offer, offer_id: "o2", method: "croc" as const }] }));
+  expect(screen.getByText(/, with croc\./)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /Get Riya's copy/ }));
+  expect(sent).not.toContainEqual({ type: "get_file", offer_id: "o2" });
   expect(screen.getByRole("button", { name: "Install croc" })).toBeInTheDocument();
 });
 

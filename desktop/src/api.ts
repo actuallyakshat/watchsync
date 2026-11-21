@@ -51,7 +51,11 @@ export interface Offer {
   name: string;
   size: number;
   fingerprint: string;
+  /** How it's sent: straight from their Mac, or with croc. */
+  method: SendMethod;
 }
+
+export type SendMethod = "direct" | "croc";
 
 export interface Transfer {
   id: number;
@@ -59,7 +63,14 @@ export interface Transfer {
   peer: string;
   file: string;
   size: number;
-  progress: { percent: number; amount: string | null; speed: string | null; eta: string | null };
+  progress: {
+    percent: number;
+    amount: string | null;
+    speed: string | null;
+    eta: string | null;
+    /** Direct sends: Mac to Mac, or through iroh's relay. */
+    via?: "direct" | "relayed" | null;
+  };
   state: "waiting" | "running" | "checking" | "done" | "failed" | "cancelled";
   message: string | null;
   path: string | null;
@@ -110,6 +121,7 @@ export interface Snapshot {
   invite_link: string | null;
   offers: Offer[];
   sharing: boolean;
+  sharing_method?: SendMethod | null;
   transfers: Transfer[];
   /** The host's movie, found on this Mac by its exact name. */
   found: { path: string; folder: string } | null;
@@ -143,7 +155,7 @@ export type Command =
   | { type: "react"; reaction: Reaction }
   | { type: "set_track"; kind: TrackKind; id: number | null }
   | { type: "set_comfort"; comfort: Comfort }
-  | { type: "share_file" }
+  | { type: "share_file"; method: SendMethod }
   | { type: "stop_sharing" }
   | { type: "get_file"; offer_id: string }
   | { type: "cancel_transfer"; id: number }
@@ -210,6 +222,7 @@ export const EMPTY: Snapshot = {
   invite_link: null,
   offers: [],
   sharing: false,
+  sharing_method: null,
   transfers: [],
   found: null,
   my_id: "",

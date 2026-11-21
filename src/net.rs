@@ -14,6 +14,25 @@ use tokio::sync::mpsc;
 pub const ALPN: &[u8] = b"watchsync/0";
 /// The call's fallback relay between two people's Macs (see `relay`).
 pub const ALPN_RELAY: &[u8] = b"watchsync/relay/0";
+/// A movie file sent straight from one Mac to another (see `share`).
+pub const ALPN_FILE: &[u8] = b"watchsync/file/0";
+
+/// How an offered copy is sent: over the room's own direct connection, or
+/// with croc (through croc's public relay).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Method {
+    #[default]
+    Direct,
+    Croc,
+}
+
+impl Method {
+    /// Offers from apps before direct sending existed were all croc.
+    fn older_apps() -> Self {
+        Method::Croc
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum Intent {
@@ -25,7 +44,7 @@ pub enum Intent {
     SetSubScale { scale: f64 },
 }
 
-/// A movie file someone offers to send with croc.
+/// A movie file someone offers to send.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Offer {
     pub offer_id: String,
@@ -35,6 +54,8 @@ pub struct Offer {
     pub name: String,
     pub size: u64,
     pub fingerprint: String,
+    #[serde(default = "Method::older_apps")]
+    pub method: Method,
 }
 
 /// Quick reactions. Shown as words on the movie (its text renderer has no
@@ -155,8 +176,13 @@ pub enum Msg {
         to: String,
         from_id: String,
         from: String,
+        /// The asker's app can receive directly (older apps can't).
+        #[serde(default)]
+        direct: bool,
     },
-    /// The croc code for one download, for the requester (`to`) only.
+    /// Go ahead, for the requester (`to`) only: the croc code, or
+    /// `DIRECT_CODE` for a direct send (the sender only lets the requester's
+    /// endpoint in, so there's no secret to pass on).
     FileCode {
         offer_id: String,
         to: String,
@@ -504,13 +530,16 @@ fn spawn_reader(
 /// it's reachable (so its address code includes the relay).
 pub async fn bind() -> Result<Endpoint> {
     let endpoint = Endpoint::builder(presets::N0)
-        .alpns(vec![ALPN.to_vec(), ALPN_RELAY.to_vec()])
+        .alpns(vec![ALPN.to_vec(), ALPN_RELAY.to_vec(), ALPN_FILE.to_vec()])
         .bind()
         .await
         .map_err(err)?;
     endpoint.online().await;
     Ok(endpoint)
 }
+
+/// The `FileCode` that means "connect to me directly".
+pub const DIRECT_CODE: &str = "direct";
 
 /// The address code others use to reach this endpoint.
 pub fn code_of(endpoint: &Endpoint) -> String {
@@ -528,8 +557,9 @@ pub fn serve(endpoint: Endpoint, events: mpsc::UnboundedSender<NetEvent>) {
 }
 
 /// Handle every incoming connection on `endpoint` (call once, right after
-/// binding): guests joining, while `serving` (this Mac is the host), and
-/// friends' call relays at any time (handed to `relay`).
+/// binding): guests joining, while `serving` (this Mac is the host), and at
+/// any time friends' call relays and movie downloads (handed to `relay`;
+/// tell them apart by `alpn()`).
 pub fn listen(
     endpoint: Endpoint,
     events: mpsc::UnboundedSender<NetEvent>,
@@ -546,7 +576,7 @@ pub fn listen(
             let relay = relay.clone();
             tokio::spawn(async move {
                 let Ok(conn) = incoming.await else { return };
-                if conn.alpn() == ALPN_RELAY {
+                if conn.alpn() == ALPN_RELAY || conn.alpn() == ALPN_FILE {
                     let _ = relay.send(conn);
                     return;
                 }

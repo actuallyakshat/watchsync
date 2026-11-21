@@ -67,11 +67,16 @@ Both also install WatchSync's helper apps, mpv (the video player) and croc
 - **File check**: shows whether everyone's copy matches the host's.
 - **Finds your copy**: if a file with the host's exact name is on your Mac
   (Spotlight), WatchSync suggests opening it.
-- **Send the movie**: *Share my copy*, and friends without it click *Get
-  Riya's copy*. Sent with [croc](https://github.com/schollz/croc), one
-  private code per download, checked on arrival, saved to
-  `~/Movies/WatchSync` and opened. Both Macs stay awake while the transfer
-  runs (`caffeinate`, tied to croc; on battery only idle sleep is
+- **Send the movie**: *Share directly* or *Share with croc*, and friends
+  without it click *Get Riya's copy*. **Directly** goes over the room's own
+  iroh connection, Mac to Mac when the routers allow (most homes), else
+  through iroh's relay; only the friend who asked can connect, and a
+  dropped download resumes where it stopped. The transfer shows whether
+  it's *direct* or *through a relay*. **croc**
+  ([croc](https://github.com/schollz/croc)) uses one private code per
+  download through croc's public relay. Either way the copy is checked on
+  arrival, saved to `~/Movies/WatchSync` and opened. Both Macs stay awake
+  while the transfer runs (`caffeinate`; on battery only idle sleep is
   prevented, and closing a laptop's lid still sleeps it).
 - **In-app updates**: a signed update feed; Settings → Check for updates.
 
@@ -130,7 +135,7 @@ drift recovery, a shared 2.39:1 crop and a late joiner.
 | `src/mpv.rs` | Launches mpv and talks to its JSON IPC socket |
 | `src/net.rs` | iroh transport, wire messages, invite codes, version check |
 | `src/fingerprint.rs` | Quick file identity check |
-| `src/share.rs` | Sending movies with croc, keeping the Mac awake |
+| `src/share.rs` | Sending movies (directly over iroh, or with croc), keeping the Mac awake |
 | `desktop/src-tauri` | The macOS app: bridges the engine to the window |
 | `desktop/src` | The UI (React), styled with Tars's design tokens |
 | `docs/join` | The invite-link page (GitHub Pages) that opens the app |
