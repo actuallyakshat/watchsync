@@ -13,11 +13,15 @@ use watchsync::net::Method;
 /// One transfer test at a time: they count caffeinate processes.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
+/// Ones already running when the test started (say, the installed
+/// WatchSync sending a movie) don't count.
+static ALREADY: Mutex<(usize, usize)> = Mutex::new((0, 0));
+
 fn crocs() -> usize {
-    count_procs("croc", "--ignore-stdin")
+    count_procs("croc", "--ignore-stdin").saturating_sub(ALREADY.lock().unwrap().0)
 }
 fn awake() -> usize {
-    count_procs("caffeinate", "-i -s -w")
+    count_procs("caffeinate", "-i -s -w").saturating_sub(ALREADY.lock().unwrap().1)
 }
 
 #[test]
@@ -33,6 +37,8 @@ fn send_a_movie_directly_while_keeping_the_mac_awake() {
 
 fn send_a_movie(method: Method) {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    *ALREADY.lock().unwrap() = (0, 0);
+    *ALREADY.lock().unwrap() = (crocs(), awake());
     headless();
     let movie = big_clip();
     let size = std::fs::metadata(&movie).unwrap().len();

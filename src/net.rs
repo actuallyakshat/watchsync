@@ -531,6 +531,7 @@ fn spawn_reader(
 pub async fn bind() -> Result<Endpoint> {
     let endpoint = Endpoint::builder(presets::N0)
         .alpns(vec![ALPN.to_vec(), ALPN_RELAY.to_vec(), ALPN_FILE.to_vec()])
+        .transport_config(transport_config())
         .bind()
         .await
         .map_err(err)?;
@@ -540,6 +541,21 @@ pub async fn bind() -> Result<Endpoint> {
 
 /// The `FileCode` that means "connect to me directly".
 pub const DIRECT_CODE: &str = "direct";
+
+/// QUIC settings for every connection. BBR rather than the default Cubic:
+/// Cubic fills a router's queue until packets drop, and home routers often
+/// queue so much ("bufferbloat") that a busy upload adds 0.5–1 s of delay.
+/// With one stream's flow-control window (~1.25 MB) per round trip, that
+/// held a direct movie send to about 1.5 MB/s on a 92 Mbps upload. BBR
+/// paces to the link's real rate and keeps the queue short, so the delay
+/// stays low, the window covers the whole upload, and the call stays
+/// smooth during a send. (Don't raise the window instead: noq's receiver
+/// drops the connection when too much arrives out of order.)
+pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
+    iroh::endpoint::QuicTransportConfig::builder()
+        .congestion_controller_factory(Arc::new(noq_proto::congestion::Bbr3Config::default()))
+        .build()
+}
 
 /// The address code others use to reach this endpoint.
 pub fn code_of(endpoint: &Endpoint) -> String {
