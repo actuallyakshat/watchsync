@@ -1,5 +1,10 @@
 Watch the same movie with friends on separate Macs, in sync. Everyone plays their own copy; pause, play or seek on any Mac and it happens for everyone. No accounts.
 
+## New in 0.7.1
+
+- **Faster croc**: croc 11.3.3 and later connect your Macs directly when they can, instead of always going through croc's public relay. If your croc is older, WatchSync says so and updates it in one click. Your friend needs the newer croc too.
+- **Clearer call badge**: when the call can't connect on its own and goes through iroh, the badge now says whether that link is still direct (**via iroh · direct**) or on iroh's relay servers (**via iroh relay**). Some networks (phone hotspots, some providers) block the call's own direct connection; iroh often still gets through directly.
+
 ## New in 0.7.0: much faster movie sending
 
 - **Share directly**: your copy goes straight from your Mac to your friend's over the room's own connection, instead of through a shared public server. Between two homes that's usually as fast as your upload. If your networks don't allow a direct link, it goes through a relay. The progress line shows which: **direct** or **through a relay (slower)**.
