@@ -1,5 +1,14 @@
 Watch the same movie with friends on separate Macs, in sync. Everyone plays their own copy; pause, play or seek on any Mac and it happens for everyone. No accounts.
 
+## New in 0.7.0: much faster movie sending
+
+- **Share directly**: your copy goes straight from your Mac to your friend's over the room's own connection, instead of through a shared public server. Between two homes that's usually as fast as your upload. If your networks don't allow a direct link, it goes through a relay. The progress line shows which: **direct** or **through a relay (slower)**.
+- **Or share with croc**, the old way, now quicker to start. Choose when you share: **Share directly** or **Share with croc**. Getting a direct copy needs nothing extra installed.
+- **Picks up where it stopped**: if a direct download drops, **Try again** continues from there instead of starting over.
+- Only the friend who asked can download your copy, and it's checked on arrival as before.
+
+Sending directly needs 0.7.0 on both Macs (and on the host's). Friends on an older version are told to update; croc still works for them.
+
 ## New in 0.6.1: a better call
 
 - **Pin anything**: hover a tile to pin it to the big spot: a friend, their shared screen, or yourself. Pin a friend while they share and their screen stays in view, small.
