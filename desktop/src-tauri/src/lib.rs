@@ -80,7 +80,46 @@ pub(crate) const CALL: &str = "call";
 fn show_call(app: tauri::AppHandle) {
     if let Some(w) = app.get_webview_window(CALL) {
         let _ = w.show();
+        // In the middle of the screen the main window is on, where the
+        // person is looking (the call may have been left on another display).
+        let monitor = app
+            .get_webview_window("main")
+            .and_then(|m| m.current_monitor().ok().flatten())
+            .or_else(|| w.current_monitor().ok().flatten());
+        if let (Some(m), Ok(size)) = (monitor, w.outer_size()) {
+            let area = m.work_area();
+            let (x, y) = centered(
+                (area.position.x, area.position.y),
+                (area.size.width, area.size.height),
+                (size.width, size.height),
+            );
+            let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+        }
+        let _ = w.set_focus();
         let _ = w.emit_to(CALL, "call-expand", ());
+    }
+}
+
+/// Top-left corner that centres a `window`-sized window in the screen area
+/// at `origin` of `area` size (all physical pixels). A window bigger than the
+/// area is kept on it, top-left first.
+fn centered(origin: (i32, i32), area: (u32, u32), window: (u32, u32)) -> (i32, i32) {
+    let mid = |o: i32, a: u32, w: u32| o + ((a as i64 - w as i64) / 2).max(0) as i32;
+    (mid(origin.0, area.0, window.0), mid(origin.1, area.1, window.1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::centered;
+
+    #[test]
+    fn the_call_window_lands_in_the_middle_of_the_screen() {
+        // 1440×875 work area below a 25 px menu bar, 400×300 window.
+        assert_eq!(centered((0, 25), (1440, 875), (400, 300)), (520, 312));
+        // A second display to the left of the main one.
+        assert_eq!(centered((-1920, 0), (1920, 1080), (800, 600)), (-1360, 240));
+        // Bigger than the screen: pinned to its top-left, not off-screen.
+        assert_eq!(centered((0, 25), (1000, 700), (1200, 800)), (0, 25));
     }
 }
 
