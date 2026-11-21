@@ -224,7 +224,7 @@ export function App() {
                   await installCroc();
                   setSetup(await playerSetup());
                 },
-                onShare: () => void send({ type: "share_file" }),
+                onShare: (method) => void send({ type: "share_file", method }),
                 onStopSharing: () => void send({ type: "stop_sharing" }),
                 onGet: (offer_id) => void send({ type: "get_file", offer_id }),
                 onCancel: (id) => void send({ type: "cancel_transfer", id }),
