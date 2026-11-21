@@ -1,5 +1,10 @@
 Watch the same movie with friends on separate Macs, in sync. Everyone plays their own copy; pause, play or seek on any Mac and it happens for everyone. No accounts.
 
+## New in 0.7.2: direct sends that use your whole upload
+
+- **Much faster direct sends on busy home Wi-Fi**: many home routers queue so much data while you upload that every reply waits a second or more, and a direct send crawled at a fraction of your upload speed. WatchSync now paces sending to what your connection can really carry, so the queue stays short and sends can use your full upload. Only the sender needs 0.7.2.
+- **A smoother call while sending**: the same short queue means your voice and video don't lag behind a movie upload.
+
 ## New in 0.7.1
 
 - **Faster croc**: croc 11.3.3 and later connect your Macs directly when they can, instead of always going through croc's public relay. If your croc is older, WatchSync says so and updates it in one click. Your friend needs the newer croc too.
